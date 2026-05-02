@@ -15,6 +15,48 @@ Defaults to `http://127.0.0.1:11435` and expects Ollama on `http://localhost:114
 - Dashboard: `http://localhost:11435/`
 - Control panel: `http://localhost:11435/control`
 
+## Run as a service (systemd)
+
+For a persistent install on Linux, run it as a user systemd unit. This survives logouts (`loginctl enable-linger $USER`) and restarts on failure.
+
+Create `~/.config/systemd/user/ollama-dashboard.service`:
+
+```ini
+[Unit]
+Description=Ollama Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ollama-dashboard
+Environment=OLLAMA_DASHBOARD_HOST=0.0.0.0
+ExecStart=/usr/bin/python3 %h/ollama-dashboard/server.py
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+Adjust `WorkingDirectory` / `ExecStart` to wherever you cloned the repo, then:
+
+```bash
+loginctl enable-linger $USER          # one-time, so it runs without you logged in
+systemctl --user daemon-reload
+systemctl --user enable --now ollama-dashboard
+```
+
+Common operations:
+
+```bash
+systemctl --user status ollama-dashboard
+systemctl --user restart ollama-dashboard
+journalctl --user -u ollama-dashboard -f
+```
+
+To change config, edit the `Environment=` lines in the unit file, then `systemctl --user daemon-reload && systemctl --user restart ollama-dashboard`.
+
 ## Configuration
 
 All settings are environment variables with sensible defaults:
