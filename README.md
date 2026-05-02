@@ -1,4 +1,4 @@
-# ollama-dashboard
+# Ollama Dashboard
 
 A local dashboard for [Ollama](https://ollama.com). Live view of loaded models, library, pulls, and request stats, plus a control panel for loading/unloading models, pulling from `ollama.com/library`, and running quick benchmarks.
 
