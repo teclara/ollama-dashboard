@@ -70,6 +70,24 @@ def gpu():
         return {"error": str(e)}
 
 
+_NVIDIA_VERSIONS = {}
+
+
+def nvidia_versions():
+    if _NVIDIA_VERSIONS: return _NVIDIA_VERSIONS
+    try:
+        out = subprocess.check_output(["nvidia-smi", "--version"], text=True, timeout=2)
+    except Exception:
+        return {}
+    for line in out.splitlines():
+        m = re.match(r"^\s*(.+?)\s*:\s*(.+?)\s*$", line)
+        if not m: continue
+        k, v = m.group(1).lower(), m.group(2)
+        if "driver version" in k: _NVIDIA_VERSIONS["driver"] = v
+        elif "cuda version" in k: _NVIDIA_VERSIONS["cuda"] = v
+    return _NVIDIA_VERSIONS
+
+
 def gpu_processes():
     try:
         out = subprocess.check_output(
@@ -396,6 +414,7 @@ def state():
         "dash_uptime_s": int(time.time() - START),
         "gpu": g,
         "gpu_processes": gpu_processes(),
+        "gpu_versions": nvidia_versions(),
         "gpu_history": get_history(),
         "loaded": loaded_models(),
         "library": all_models(),

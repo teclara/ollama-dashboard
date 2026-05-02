@@ -206,8 +206,15 @@ async function tick(){
       const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
       const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:#fcd34d`})]);
       const tempText = g.temp_mem == null ? `${g.temp}°C` : `${g.temp}°C (mem ${g.temp_mem}°C)`;
+      const ver = s.gpu_versions || {};
+      const driverText = (ver.driver || ver.cuda)
+        ? `driver ${ver.driver || '—'} · cuda ${ver.cuda || '—'}`
+        : null;
       const rows = [
         statRow('device', g.name),
+      ];
+      if(driverText) rows.push(statRow('driver', driverText));
+      rows.push(
         statRow('vram', `${g.mem_used}/${g.mem_total} MB (${fmt(pct)}%)`),
         vbar,
         statRow('utilization', g.util+'%'),
@@ -215,7 +222,7 @@ async function tick(){
         statRow('fan', g.fan == null ? '—' : g.fan+'%'),
         statRow('power', g.power_limit ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)` : `${fmt(g.power)} W`),
         pbar,
-      ];
+      );
       const tr = g.throttle_reasons || [];
       if(tr.length){
         const pills = ce('span', {cls:'v'}, tr.map(r => ce('span', {cls:'pill warn', style:'margin-left:4px', text:r})));
