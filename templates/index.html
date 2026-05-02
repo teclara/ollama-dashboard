@@ -211,6 +211,7 @@ async function tick(){
         vbar,
         statRow('utilization', g.util+'%'),
         statRow('temperature', g.temp+'°C'),
+        statRow('fan', g.fan == null ? '—' : g.fan+'%'),
         statRow('power', g.power_limit ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)` : `${fmt(g.power)} W`),
         pbar,
       ]);

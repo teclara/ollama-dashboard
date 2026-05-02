@@ -32,10 +32,13 @@ def gpu():
     try:
         out = subprocess.check_output(
             ["nvidia-smi",
-             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max",
+             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,fan.speed,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max",
              "--format=csv,noheader,nounits"], text=True, timeout=2).strip()
-        n, mu, mt, u, t, p, pl, lg, lgm, lw, lwm = [x.strip() for x in out.split(",")]
+        n, mu, mt, u, t, fan, p, pl, lg, lgm, lw, lwm = [x.strip() for x in out.split(",")]
+        try: fan_pct = int(fan)
+        except ValueError: fan_pct = None  # datacenter/laptop GPUs return [N/A]
         return {"name": n, "mem_used": int(mu), "mem_total": int(mt), "util": int(u), "temp": int(t),
+                "fan": fan_pct,
                 "power": float(p), "power_limit": float(pl),
                 "pcie_gen": int(lg), "pcie_gen_max": int(lgm),
                 "pcie_width": int(lw), "pcie_width_max": int(lwm)}
