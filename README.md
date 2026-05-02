@@ -79,6 +79,53 @@ All settings are environment variables with sensible defaults:
 | `OLLAMA_LOG_WINDOW_LINES` | `600` | journalctl window for request stats |
 | `OLLAMA_STATS_WINDOW_SEC` | `300` | Stats aggregation window |
 
+### Setting variables
+
+**One-off, command line:**
+
+```bash
+OLLAMA_DASHBOARD_HOST=0.0.0.0 OLLAMA_DASHBOARD_PORT=8080 python3 server.py
+```
+
+**Persistent, current shell session:**
+
+```bash
+export OLLAMA_URL=http://192.168.1.50:11434
+python3 server.py
+```
+
+**Persistent, all shells** — append to `~/.bashrc` (or `~/.zshrc`):
+
+```bash
+export OLLAMA_DASHBOARD_HOST=0.0.0.0
+export OLLAMA_URL=http://192.168.1.50:11434
+```
+
+**Under systemd** — add `Environment=` lines to the `[Service]` section of the unit file, one per variable:
+
+```ini
+[Service]
+Environment=OLLAMA_DASHBOARD_HOST=0.0.0.0
+Environment=OLLAMA_DASHBOARD_PORT=8080
+Environment=OLLAMA_URL=http://192.168.1.50:11434
+Environment=OLLAMA_HAYSTACK_PATH=/srv/corpora/moby.txt
+```
+
+For many variables, point `EnvironmentFile=` at a `.env`-style file instead:
+
+```ini
+[Service]
+EnvironmentFile=%h/ollama-dashboard.env
+```
+
+```
+# ~/ollama-dashboard.env
+OLLAMA_DASHBOARD_HOST=0.0.0.0
+OLLAMA_URL=http://192.168.1.50:11434
+```
+
+After any unit-file change: `systemctl --user daemon-reload && systemctl --user restart ollama-dashboard`.
+
 ## Requirements
 
 - Python 3.9+
