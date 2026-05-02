@@ -38,12 +38,12 @@
 <nav style="display:flex;gap:16px;margin-bottom:16px;font-size:12px"><a href="/" style="color:#7dd3fc;text-decoration:none">▸ dashboard</a><a href="/control" style="color:#7a8290;text-decoration:none">control →</a></nav>
 <h1>ollama // <span>devstation</span></h1>
 
+<div class="card"><h2>Loaded Models</h2><div id="loaded"></div></div>
+
 <div class="grid-2">
   <div class="card"><h2>GPU</h2><div id="gpu"></div><div id="spark"></div></div>
-  <div class="card"><h2>PCIe / Oculink</h2><div id="pcie"></div><div id="pcie-spark"></div></div>
+  <div class="card"><h2>PCIe / Oculink</h2><div id="pcie"></div></div>
 </div>
-
-<div class="card"><h2>Loaded Models</h2><div id="loaded"></div></div>
 
 <div class="grid-3">
   <div class="card"><h2>Stats (last 5 min)</h2><div id="stats"></div></div>
@@ -205,18 +205,35 @@ async function tick(){
       const vbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pct}%`})]);
       const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
       const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:#fcd34d`})]);
-      replace(el('gpu'), [
+      const tempText = g.temp_mem == null ? `${g.temp}°C` : `${g.temp}°C (mem ${g.temp_mem}°C)`;
+      const rows = [
         statRow('device', g.name),
         statRow('vram', `${g.mem_used}/${g.mem_total} MB (${fmt(pct)}%)`),
         vbar,
         statRow('utilization', g.util+'%'),
-        statRow('temperature', g.temp+'°C'),
+        statRow('temperature', tempText),
         statRow('fan', g.fan == null ? '—' : g.fan+'%'),
         statRow('power', g.power_limit ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)` : `${fmt(g.power)} W`),
         pbar,
-      ]);
+      ];
+      const tr = g.throttle_reasons || [];
+      if(tr.length){
+        const pills = ce('span', {cls:'v'}, tr.map(r => ce('span', {cls:'pill warn', style:'margin-left:4px', text:r})));
+        rows.push(ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:'throttling'}), pills]));
+      }
+      replace(el('gpu'), rows);
     }
     replace(el('spark'), sparkline(s.gpu_history || []));
+
+    // GPU processes
+    const procs = s.gpu_processes || [];
+    if(procs.length){
+      const procWrap = ce('div', {style:'margin-top:12px;padding-top:10px;border-top:1px solid var(--border)'});
+      procWrap.appendChild(ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:`processes (${procs.length})`}));
+      const ptable = table(['pid','process','vram'], procs.map(p => row([p.pid, {cls:'path', text:p.name}, fmtBytes(p.vram_mb*1024*1024)])));
+      procWrap.appendChild(ptable);
+      el('spark').appendChild(procWrap);
+    }
 
     // PCIe
     const pc = s.pcie || {};
@@ -230,16 +247,25 @@ async function tick(){
     const totalMbs = (lat.rx_mbs||0) + (lat.tx_mbs||0);
     const linkPct = linkCap ? Math.min(100, totalMbs/linkCap*100) : 0;
     const totalBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${linkPct}%;background:#a78bfa`})]);
+    const h = s.host || {};
+    const cpuBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.cpu_pct||0}%;background:#7dd3fc`})]);
+    const memBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.mem_pct||0}%;background:#86efac`})]);
+    const subhead = label => ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--border)', text: label});
     replace(el('pcie'), [
+      ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:'oculink'}),
       statRow('link', negotiated + (negotiated===max ? '' : ` (max ${max})`)),
       statRow('link cap', linkCap ? `~${(linkCap/1024).toFixed(2)} GB/s` : '—'),
       statRow('rx', (lat.rx_mbs||0) + ' MB/s'),
       statRow('tx', (lat.tx_mbs||0) + ' MB/s'),
       statRow('total', totalMbs + ' MB/s'),
       totalBar,
+      pcieSparkline(pc.history || [], linkCap),
+      subhead('host'),
+      statRow('cpu', h.cpu_pct == null ? '—' : `${fmt(h.cpu_pct,1)}% (${h.ncpu} cores · load ${h.load_1 ?? '—'})`),
+      cpuBar,
+      statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
+      memBar,
     ]);
-    replace(el('pcie-spark'), pcieSparkline(pc.history || [], linkCap));
-
     // Loaded
     if(!s.loaded.length){ replace(el('loaded'), ce('div', {cls:'empty', text:'no models loaded'})); }
     else {

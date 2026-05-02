@@ -28,22 +28,65 @@ def parse_log_ts(ts):  # "2026/05/01 - 11:08:32"
     except Exception: return 0
 
 
+_THROTTLE_BITS = [
+    (0x0000000000000001, "gpu_idle"),
+    (0x0000000000000002, "applications_clocks"),
+    (0x0000000000000004, "sw_power_cap"),
+    (0x0000000000000008, "hw_slowdown"),
+    (0x0000000000000010, "sync_boost"),
+    (0x0000000000000020, "sw_thermal_slowdown"),
+    (0x0000000000000040, "hw_thermal_slowdown"),
+    (0x0000000000000080, "hw_power_brake"),
+    (0x0000000000000100, "display_clock_setting"),
+]
+
+
+def _decode_throttle(hex_str):
+    try: bits = int(hex_str, 16)
+    except (ValueError, TypeError): return []
+    return [name for mask, name in _THROTTLE_BITS if bits & mask and name != "gpu_idle"]
+
+
 def gpu():
     try:
         out = subprocess.check_output(
             ["nvidia-smi",
-             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,fan.speed,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max",
+             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,temperature.memory,fan.speed,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,clocks_event_reasons.active",
              "--format=csv,noheader,nounits"], text=True, timeout=2).strip()
-        n, mu, mt, u, t, fan, p, pl, lg, lgm, lw, lwm = [x.strip() for x in out.split(",")]
-        try: fan_pct = int(fan)
-        except ValueError: fan_pct = None  # datacenter/laptop GPUs return [N/A]
+        n, mu, mt, u, t, tm, fan, p, pl, lg, lgm, lw, lwm, throttle = [x.strip() for x in out.split(",")]
+
+        def _maybe_int(s):
+            try: return int(s)
+            except ValueError: return None  # [N/A]
+
         return {"name": n, "mem_used": int(mu), "mem_total": int(mt), "util": int(u), "temp": int(t),
-                "fan": fan_pct,
+                "temp_mem": _maybe_int(tm),
+                "fan": _maybe_int(fan),
                 "power": float(p), "power_limit": float(pl),
                 "pcie_gen": int(lg), "pcie_gen_max": int(lgm),
-                "pcie_width": int(lw), "pcie_width_max": int(lwm)}
+                "pcie_width": int(lw), "pcie_width_max": int(lwm),
+                "throttle_reasons": _decode_throttle(throttle)}
     except Exception as e:
         return {"error": str(e)}
+
+
+def gpu_processes():
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-compute-apps=pid,process_name,used_memory",
+             "--format=csv,noheader,nounits"], text=True, timeout=2).strip()
+    except Exception:
+        return []
+    procs = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",", 2)]
+        if len(parts) != 3: continue
+        try:
+            procs.append({"pid": int(parts[0]), "name": parts[1], "vram_mb": int(parts[2])})
+        except ValueError:
+            continue
+    return sorted(procs, key=lambda p: -p["vram_mb"])
 
 
 def loaded_models():
@@ -244,6 +287,50 @@ def get_history():
         return list(_HIST)
 
 
+# Host CPU/RAM ----------------------------------------------------------------
+
+_CPU_LAST = {"idle": 0, "total": 0}
+_CPU_LOCK = threading.Lock()
+
+
+def _read_cpu_totals():
+    with open("/proc/stat") as f:
+        parts = f.readline().split()  # cpu user nice system idle iowait irq softirq steal ...
+    nums = [int(x) for x in parts[1:]]
+    idle = nums[3] + (nums[4] if len(nums) > 4 else 0)  # idle + iowait
+    return idle, sum(nums)
+
+
+def host():
+    info = {"cpu_pct": None, "mem_used": 0, "mem_total": 0, "mem_pct": 0, "load_1": None, "ncpu": os.cpu_count() or 1}
+    try:
+        idle, total = _read_cpu_totals()
+        with _CPU_LOCK:
+            d_idle = idle - _CPU_LAST["idle"]
+            d_total = total - _CPU_LAST["total"]
+            _CPU_LAST["idle"], _CPU_LAST["total"] = idle, total
+        if d_total > 0:
+            info["cpu_pct"] = round(max(0.0, min(100.0, (1 - d_idle / d_total) * 100)), 1)
+    except Exception: pass
+    try:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                mem[k.strip()] = int(v.strip().split()[0]) * 1024  # kB → B
+        total_b = mem.get("MemTotal", 0)
+        avail_b = mem.get("MemAvailable", mem.get("MemFree", 0))
+        used_b = max(0, total_b - avail_b)
+        info["mem_total"] = total_b
+        info["mem_used"] = used_b
+        info["mem_pct"] = round(used_b / total_b * 100, 1) if total_b else 0
+    except Exception: pass
+    try:
+        info["load_1"] = round(os.getloadavg()[0], 2)
+    except Exception: pass
+    return info
+
+
 # PCIe throughput from a continuous nvidia-smi dmon stream ------------------
 
 _PCIE_LATEST = {"rx_mbs": 0, "tx_mbs": 0, "ts": 0}
@@ -308,6 +395,7 @@ def state():
         "now": datetime.now().isoformat(timespec="seconds"),
         "dash_uptime_s": int(time.time() - START),
         "gpu": g,
+        "gpu_processes": gpu_processes(),
         "gpu_history": get_history(),
         "loaded": loaded_models(),
         "library": all_models(),
@@ -319,4 +407,5 @@ def state():
         "service": service_info(),
         "tailscale": tailscale(),
         "pcie": pcie(),
+        "host": host(),
     }
