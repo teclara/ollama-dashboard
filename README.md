@@ -90,7 +90,7 @@ OLLAMA_DASHBOARD_HOST=0.0.0.0 OLLAMA_DASHBOARD_PORT=8080 python3 server.py
 **Persistent, current shell session:**
 
 ```bash
-export OLLAMA_URL=http://192.168.1.50:11434
+export OLLAMA_URL=http://localhost:11434
 python3 server.py
 ```
 
@@ -98,7 +98,7 @@ python3 server.py
 
 ```bash
 export OLLAMA_DASHBOARD_HOST=0.0.0.0
-export OLLAMA_URL=http://192.168.1.50:11434
+export OLLAMA_URL=http://localhost:11434
 ```
 
 **Under systemd** — add `Environment=` lines to the `[Service]` section of the unit file, one per variable:
@@ -107,7 +107,7 @@ export OLLAMA_URL=http://192.168.1.50:11434
 [Service]
 Environment=OLLAMA_DASHBOARD_HOST=0.0.0.0
 Environment=OLLAMA_DASHBOARD_PORT=8080
-Environment=OLLAMA_URL=http://192.168.1.50:11434
+Environment=OLLAMA_URL=http://localhost:11434
 Environment=OLLAMA_HAYSTACK_PATH=/srv/corpora/moby.txt
 ```
 
@@ -121,7 +121,7 @@ EnvironmentFile=%h/ollama-dashboard.env
 ```
 # ~/ollama-dashboard.env
 OLLAMA_DASHBOARD_HOST=0.0.0.0
-OLLAMA_URL=http://192.168.1.50:11434
+OLLAMA_URL=http://localhost:11434
 ```
 
 After any unit-file change: `systemctl --user daemon-reload && systemctl --user restart ollama-dashboard`.
