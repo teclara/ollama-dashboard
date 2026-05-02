@@ -1,0 +1,357 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ollama // devstation</title>
+<style>
+  :root{--bg:#0b0d12;--card:#141821;--border:#222936;--text:#e6e9ef;--dim:#7a8290;--accent:#7dd3fc;--accent2:#a78bfa;--good:#86efac;--warn:#fcd34d;--bad:#fca5a5}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:24px;max-width:1400px;margin-inline:auto}
+  h1{font-size:14px;font-weight:600;margin:0 0 16px;color:var(--dim);letter-spacing:.05em;text-transform:uppercase}
+  h1 span{color:var(--accent)}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+  @media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:11px;font-weight:600;margin:0 0 12px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+  .stat{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--border)}
+  .stat:last-child{border:0}
+  .stat .k{color:var(--dim)}
+  .stat .v{font-variant-numeric:tabular-nums}
+  .bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:8px 0}
+  .bar>div{height:100%;background:var(--accent);transition:width .3s}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border);text-transform:uppercase;font-size:10px;letter-spacing:.1em}
+  td{padding:6px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;vertical-align:top}
+  tr:last-child td{border:0}
+  td.path{font-family:ui-monospace,monospace;color:var(--accent2)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
+  .pill.good{background:rgba(134,239,172,.15);color:var(--good)}
+  .pill.warn{background:rgba(252,211,77,.15);color:var(--warn)}
+  .pill.bad{background:rgba(252,165,165,.15);color:var(--bad)}
+  .pill.dim{background:var(--border);color:var(--dim)}
+  .meta{color:var(--dim);font-size:11px;margin-top:8px;text-align:right}
+  .empty{color:var(--dim);font-style:italic;padding:12px 0}
+  svg.spark{width:100%;height:60px;display:block}
+  .spark-label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-top:8px;display:flex;justify-content:space-between}
+  .spark-label .vram{color:var(--accent)}
+  .spark-label .util{color:var(--accent2)}
+</style></head>
+<body>
+<nav style="display:flex;gap:16px;margin-bottom:16px;font-size:12px"><a href="/" style="color:#7dd3fc;text-decoration:none">▸ dashboard</a><a href="/control" style="color:#7a8290;text-decoration:none">control →</a></nav>
+<h1>ollama // <span>devstation</span></h1>
+
+<div class="grid-2">
+  <div class="card"><h2>GPU</h2><div id="gpu"></div><div id="spark"></div></div>
+  <div class="card"><h2>PCIe / Oculink</h2><div id="pcie"></div><div id="pcie-spark"></div></div>
+</div>
+
+<div class="card"><h2>Loaded Models</h2><div id="loaded"></div></div>
+
+<div class="grid-3">
+  <div class="card"><h2>Stats (last 5 min)</h2><div id="stats"></div></div>
+  <div class="card"><h2>Service & Disk</h2><div id="service"></div></div>
+  <div class="card"><h2>Tailscale</h2><div id="tailscale"></div></div>
+</div>
+
+<div class="grid-2">
+  <div class="card"><h2>Top Clients (5 min)</h2><div id="clients"></div></div>
+  <div class="card"><h2>Top Endpoints (5 min)</h2><div id="endpoints"></div></div>
+</div>
+
+<div class="card"><h2>Recent Requests</h2><div id="reqs"></div></div>
+<div class="card"><h2>Library (<span id="libcount">0</span>)</h2><div id="lib"></div></div>
+<div class="meta">last update <span id="now">—</span> · dashboard up <span id="dashup">—</span></div>
+
+<script>
+const SVG_NS = "http://www.w3.org/2000/svg";
+const fmt = (n,d=1) => Number(n).toFixed(d);
+const el = id => document.getElementById(id);
+
+function ce(tag, opts={}, children=[]){
+  const e = document.createElement(tag);
+  if(opts.cls) e.className = opts.cls;
+  if(opts.text != null) e.textContent = opts.text;
+  if(opts.style) e.setAttribute('style', opts.style);
+  for(const c of children){ if(c) e.appendChild(c); }
+  return e;
+}
+function svg(tag, attrs={}){
+  const e = document.createElementNS(SVG_NS, tag);
+  for(const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+function row(cells){
+  const tr = document.createElement('tr');
+  for(const c of cells){
+    const td = document.createElement('td');
+    if(c && typeof c === 'object' && c.cls === 'path'){ td.className = 'path'; td.textContent = c.text; }
+    else if(c instanceof Node) td.appendChild(c);
+    else td.textContent = (c == null ? '—' : String(c));
+    tr.appendChild(td);
+  }
+  return tr;
+}
+function table(headers, rows){
+  const t = document.createElement('table');
+  const thead = document.createElement('tr');
+  for(const h of headers){ const th = document.createElement('th'); th.textContent = h; thead.appendChild(th); }
+  t.appendChild(thead);
+  for(const r of rows) t.appendChild(r);
+  return t;
+}
+function statusPill(s){
+  const cls = s>=500?'bad':s>=400?'warn':s>=200?'good':'dim';
+  return ce('span', {cls:'pill '+cls, text:String(s)});
+}
+function fmtBytes(b){
+  if(!b) return '—';
+  const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024 && i<u.length-1){b/=1024;i++;}
+  return fmt(b)+' '+u[i];
+}
+function fmtMs(ms){ return ms == null ? '—' : ms < 1 ? fmt(ms,2)+' ms' : ms < 1000 ? fmt(ms,0)+' ms' : fmt(ms/1000,2)+' s'; }
+function fmtUptime(s){
+  if(s == null) return '—';
+  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
+  if(d) return `${d}d ${h}h`;
+  if(h) return `${h}h ${m}m`;
+  if(m) return `${m}m ${s%60}s`;
+  return `${s}s`;
+}
+function relTime(iso){
+  const d=new Date(iso); const s=Math.round((d-Date.now())/1000);
+  if(isNaN(s)) return '—';
+  return s>0 ? 'in '+s+'s' : Math.abs(s)+'s ago';
+}
+function replace(target, child){
+  target.textContent = '';
+  if(Array.isArray(child)) child.forEach(c => target.appendChild(c));
+  else if(child) target.appendChild(child);
+}
+function statRow(k, v){
+  return ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:k}), ce('span',{cls:'v',text:v==null?'—':String(v)})]);
+}
+
+function sparkline(history){
+  const wrap = ce('div');
+  if(!history.length){ wrap.appendChild(ce('div',{cls:'empty',text:'collecting samples…'})); return wrap; }
+  const W=600, H=60, pad=2;
+  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'});
+  const n = Math.max(history.length, 2);
+  const xStep = (W - 2*pad) / (n-1);
+  function poly(getter, color, fill){
+    const pts = history.map((p,i) => {
+      const v = Math.max(0, Math.min(100, getter(p)));
+      const x = pad + i*xStep, y = pad + (H-2*pad) * (1 - v/100);
+      return `${x},${y}`;
+    }).join(' ');
+    if(fill){
+      const area = svg('polygon', {points:`${pad},${H-pad} ${pts} ${pad+(n-1)*xStep},${H-pad}`,fill:color,opacity:'0.15'});
+      s.appendChild(area);
+    }
+    s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
+  }
+  poly(p => p.vram_pct, '#7dd3fc', true);
+  poly(p => p.util, '#a78bfa', false);
+  wrap.appendChild(s);
+  const last = history[history.length-1];
+  const lab = ce('div', {cls:'spark-label'}, [
+    ce('span',{cls:'vram',text:`vram ${fmt(last.vram_pct,0)}%`}),
+    ce('span',{cls:'util',text:`util ${last.util}%`}),
+    ce('span',{text:`${history.length} samples`}),
+  ]);
+  wrap.appendChild(lab);
+  return wrap;
+}
+
+function pcieSparkline(history, capMbs){
+  const wrap = ce('div');
+  if(!history.length){ wrap.appendChild(ce('div',{cls:'empty',text:'collecting samples…'})); return wrap; }
+  const W=600, H=60, pad=2;
+  const maxObserved = Math.max(...history.flatMap(p => [p.rx, p.tx]), 1);
+  const scale = Math.max(maxObserved, capMbs ? capMbs * 0.1 : 0); // dynamic, but at least 10% of cap
+  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'});
+  const n = Math.max(history.length, 2);
+  const xStep = (W - 2*pad) / (n-1);
+  function poly(getter, color, fill){
+    const pts = history.map((p,i) => {
+      const v = Math.min(1, getter(p) / scale);
+      const x = pad + i*xStep, y = pad + (H-2*pad) * (1 - v);
+      return `${x},${y}`;
+    }).join(' ');
+    if(fill){
+      s.appendChild(svg('polygon', {points:`${pad},${H-pad} ${pts} ${pad+(n-1)*xStep},${H-pad}`,fill:color,opacity:'0.15'}));
+    }
+    s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
+  }
+  poly(p => p.rx, '#86efac', true);   // green = rx (host→gpu)
+  poly(p => p.tx, '#fcd34d', false);  // amber = tx (gpu→host)
+  wrap.appendChild(s);
+  const last = history[history.length-1];
+  wrap.appendChild(ce('div', {cls:'spark-label'}, [
+    ce('span',{style:'color:#86efac',text:`rx ${last.rx} MB/s`}),
+    ce('span',{style:'color:#fcd34d',text:`tx ${last.tx} MB/s`}),
+    ce('span',{text:`peak ${maxObserved} MB/s`}),
+  ]));
+  return wrap;
+}
+
+async function tick(){
+  try{
+    const r = await fetch('/api/state'); const s = await r.json();
+
+    // GPU
+    const g = s.gpu;
+    if(g.error){ replace(el('gpu'), ce('div', {cls:'empty', text:g.error})); }
+    else {
+      const pct = (g.mem_used/g.mem_total*100);
+      const vbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pct}%`})]);
+      const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
+      const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:#fcd34d`})]);
+      replace(el('gpu'), [
+        statRow('device', g.name),
+        statRow('vram', `${g.mem_used}/${g.mem_total} MB (${fmt(pct)}%)`),
+        vbar,
+        statRow('utilization', g.util+'%'),
+        statRow('temperature', g.temp+'°C'),
+        statRow('power', g.power_limit ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)` : `${fmt(g.power)} W`),
+        pbar,
+      ]);
+    }
+    replace(el('spark'), sparkline(s.gpu_history || []));
+
+    // PCIe
+    const pc = s.pcie || {};
+    const lat = pc.latest || {};
+    const negotiated = `gen ${g.pcie_gen}.0 x${g.pcie_width}`;
+    const max = `gen ${g.pcie_gen_max}.0 x${g.pcie_width_max}`;
+    // Theoretical bandwidth: gen N → ~(N*1) GB/s/lane (rough: g1=0.25, g2=0.5, g3=1, g4=2, g5=4)
+    const lanePerGen = {1:250,2:500,3:985,4:1969,5:3938};
+    const linkCap = (lanePerGen[g.pcie_gen]||0) * g.pcie_width; // MB/s
+    const linkCapMax = (lanePerGen[g.pcie_gen_max]||0) * g.pcie_width_max;
+    const totalMbs = (lat.rx_mbs||0) + (lat.tx_mbs||0);
+    const linkPct = linkCap ? Math.min(100, totalMbs/linkCap*100) : 0;
+    const totalBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${linkPct}%;background:#a78bfa`})]);
+    replace(el('pcie'), [
+      statRow('link', negotiated + (negotiated===max ? '' : ` (max ${max})`)),
+      statRow('link cap', linkCap ? `~${(linkCap/1024).toFixed(2)} GB/s` : '—'),
+      statRow('rx', (lat.rx_mbs||0) + ' MB/s'),
+      statRow('tx', (lat.tx_mbs||0) + ' MB/s'),
+      statRow('total', totalMbs + ' MB/s'),
+      totalBar,
+    ]);
+    replace(el('pcie-spark'), pcieSparkline(pc.history || [], linkCap));
+
+    // Loaded
+    if(!s.loaded.length){ replace(el('loaded'), ce('div', {cls:'empty', text:'no models loaded'})); }
+    else {
+      const rows = s.loaded.map(m => {
+        const sz = fmtBytes(m.size_vram || m.size);
+        const proc = m.size_vram && m.size ? Math.round(m.size_vram/m.size*100) : 100;
+        const dev = ce('span', {cls:'pill '+(proc===100?'good':'warn'), text: proc+'% GPU'});
+        return row([m.name, sz, m.context_length || '—', dev, relTime(m.expires_at)]);
+      });
+      replace(el('loaded'), table(['name','vram','ctx','device','expires'], rows));
+    }
+
+    // Stats
+    const st = s.stats_5m;
+    const errPill = st.error_rate > 0.05
+      ? ce('span',{cls:'pill bad', text:fmt(st.error_rate*100,1)+'%'})
+      : st.error_rate > 0
+      ? ce('span',{cls:'pill warn', text:fmt(st.error_rate*100,1)+'%'})
+      : ce('span',{cls:'pill good', text:'0%'});
+    const errStat = ce('div', {cls:'stat'}, [
+      ce('span',{cls:'k',text:'error rate'}),
+      ce('span',{cls:'v'}, [errPill]),
+    ]);
+    replace(el('stats'), [
+      statRow('requests', st.count),
+      statRow('rps', st.rps),
+      statRow('avg latency', fmtMs(st.avg_ms)),
+      statRow('p50 latency', fmtMs(st.p50_ms)),
+      statRow('p95 latency', fmtMs(st.p95_ms)),
+      errStat,
+    ]);
+
+    // Service
+    const sv = s.service, dk = s.disk;
+    const activePill = sv.active === 'active'
+      ? ce('span',{cls:'pill good',text:sv.active})
+      : ce('span',{cls:'pill bad',text:sv.active});
+    replace(el('service'), [
+      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'ollama'}), ce('span',{cls:'v'},[activePill])]),
+      statRow('version', sv.version || '—'),
+      statRow('uptime', fmtUptime(sv.uptime_s)),
+      statRow('rss', sv.rss_kb ? fmtBytes(sv.rss_kb*1024) : '—'),
+      statRow('models size', fmtBytes(dk.models_size)),
+      statRow('disk free', dk.fs_total ? `${fmtBytes(dk.fs_free)} / ${fmtBytes(dk.fs_total)}` : '—'),
+      statRow('dashboard up', fmtUptime(s.dash_uptime_s)),
+    ]);
+
+    // Tailscale
+    const ts = s.tailscale;
+    if(!ts.up){
+      replace(el('tailscale'), [statRow('status', ts.error || 'down')]);
+    } else {
+      replace(el('tailscale'), [
+        ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'status'}), ce('span',{cls:'v'},[ce('span',{cls:'pill good',text:'up'})])]),
+        statRow('hostname', ts.hostname),
+        statRow('dns', ts.dnsname),
+        statRow('ip', ts.ip),
+        statRow('tailnet', ts.tailnet),
+        statRow('peers online', `${ts.peers_online}/${ts.peers_total}`),
+      ]);
+    }
+
+    // Top clients
+    if(!s.top_clients.length){ replace(el('clients'), ce('div',{cls:'empty',text:'no recent clients'})); }
+    else {
+      const rows = s.top_clients.map(c => {
+        const errs = c.errors > 0 ? ce('span',{cls:'pill warn',text:c.errors+' err'}) : '0';
+        return row([c.ip, c.count, errs, c.ago_s+'s ago']);
+      });
+      replace(el('clients'), table(['ip','count','errors','last seen'], rows));
+    }
+
+    // Top endpoints
+    if(!s.top_endpoints.length){ replace(el('endpoints'), ce('div',{cls:'empty',text:'no recent activity'})); }
+    else {
+      const rows = s.top_endpoints.map(e => row([{cls:'path',text:e.path}, e.count, fmtMs(e.p50_ms)]));
+      replace(el('endpoints'), table(['path','count','p50'], rows));
+    }
+
+    // Recent requests
+    if(!s.requests.length){ replace(el('reqs'), ce('div',{cls:'empty',text:'no recent requests'})); }
+    else {
+      const rows = s.requests.map(r => row([r.ts, statusPill(r.status), r.method, {cls:'path',text:r.path}, r.latency, r.ip]));
+      replace(el('reqs'), table(['time','status','method','path','latency','client'], rows));
+    }
+
+    // Library
+    el('libcount').textContent = s.library.length;
+    const libRows = s.library.map(m => {
+      const del = document.createElement('button');
+      del.textContent = 'Delete';
+      del.style.cssText = 'background:#222936;color:#e6e9ef;border:1px solid #2d3548;border-radius:4px;padding:3px 8px;font:inherit;font-size:10px;cursor:pointer';
+      del.onmouseenter = () => { del.style.borderColor = '#fca5a5'; del.style.color = '#fca5a5'; };
+      del.onmouseleave = () => { del.style.borderColor = '#2d3548'; del.style.color = '#e6e9ef'; };
+      del.onclick = async () => {
+        if(!confirm(`Delete ${m.name}?`)) return;
+        del.disabled = true; del.textContent = '…';
+        try{
+          const r = await fetch('/api/control/model', {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:m.name})});
+          if(!r.ok) throw new Error(await r.text());
+          tick();
+        } catch(e){ alert('Delete failed: '+e.message); del.disabled = false; del.textContent = 'Delete'; }
+      };
+      return row([m.name, fmtBytes(m.size), del]);
+    });
+    replace(el('lib'), table(['name','size',''], libRows));
+
+    el('now').textContent = s.now;
+    el('dashup').textContent = fmtUptime(s.dash_uptime_s);
+  } catch(e){
+    el('now').textContent = 'error: ' + e.message;
+  }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body></html>

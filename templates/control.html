@@ -1,0 +1,395 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ollama // control</title>
+<style>
+  :root{--bg:#0b0d12;--card:#141821;--border:#222936;--text:#e6e9ef;--dim:#7a8290;--accent:#7dd3fc;--accent2:#a78bfa;--good:#86efac;--warn:#fcd34d;--bad:#fca5a5}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:24px;max-width:1400px;margin-inline:auto}
+  nav{display:flex;gap:16px;margin-bottom:16px;font-size:12px}
+  nav a{color:var(--dim);text-decoration:none}
+  nav a.active{color:var(--accent2)}
+  h1{font-size:14px;font-weight:600;margin:0 0 16px;color:var(--dim);letter-spacing:.05em;text-transform:uppercase}
+  h1 span{color:var(--accent2)}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+  @media(max-width:900px){.grid-2{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
+  .card h2{font-size:11px;font-weight:600;margin:0 0 12px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{text-align:left;color:var(--dim);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--border);text-transform:uppercase;font-size:10px;letter-spacing:.1em}
+  td{padding:6px 8px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;vertical-align:middle}
+  tr:last-child td{border:0}
+  .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px}
+  .pill.good{background:rgba(134,239,172,.15);color:var(--good)}
+  .pill.warn{background:rgba(252,211,77,.15);color:var(--warn)}
+  .pill.bad{background:rgba(252,165,165,.15);color:var(--bad)}
+  .pill.dim{background:var(--border);color:var(--dim)}
+  button{background:var(--border);color:var(--text);border:1px solid #2d3548;border-radius:4px;padding:4px 10px;font:inherit;font-size:11px;cursor:pointer}
+  button:hover{border-color:var(--accent2);color:var(--accent2)}
+  button.danger:hover{border-color:var(--bad);color:var(--bad)}
+  button.primary{background:var(--accent2);color:#0b0d12;border-color:var(--accent2);font-weight:600}
+  button.primary:hover{background:#9061f5;color:#0b0d12}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  input,select,textarea{background:#0b0d12;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font:inherit;font-size:12px}
+  input:focus,select:focus,textarea:focus{outline:0;border-color:var(--accent2)}
+  textarea{width:100%;min-height:80px;font-family:ui-monospace,monospace}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .row > *{flex-shrink:0}
+  .grow{flex:1;min-width:200px}
+  .bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:8px 0}
+  .bar>div{height:100%;background:var(--accent2);transition:width .3s}
+  .empty{color:var(--dim);font-style:italic;padding:12px 0}
+  .meta{color:var(--dim);font-size:11px;margin-top:8px}
+  pre{background:#0b0d12;border:1px solid var(--border);border-radius:4px;padding:12px;font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
+  pre.thinking{color:var(--dim);max-height:200px;overflow-y:auto}
+  pre.content{color:var(--text)}
+  .stat{display:inline-block;margin-right:16px}
+  .stat .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em}
+  .stat .v{font-variant-numeric:tabular-nums;font-weight:600}
+  .suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .suggestions button{font-size:10px;padding:3px 8px}
+</style></head>
+<body>
+<nav><a href="/">← dashboard</a><a href="/control" class="active">▸ control</a></nav>
+<h1>ollama // <span>control</span></h1>
+
+<div class="card"><h2>Currently Loaded</h2><div id="loaded"></div></div>
+
+<div class="card">
+  <h2 style="display:flex;justify-content:space-between;align-items:center">
+    <span>Pull Status <span id="pulls-summary" style="color:var(--dim);font-weight:400;margin-left:8px">—</span></span>
+    <button id="pulls-clear" style="font-size:10px">Clear finished</button>
+  </h2>
+  <div id="pulls-view"></div>
+</div>
+
+<div class="card"><h2>Test Scenario</h2>
+  <div class="row" style="margin-bottom:8px">
+    <select id="test-model" class="grow"></select>
+    <select id="test-scenario"></select>
+    <button class="primary" id="run-test">Run</button>
+  </div>
+  <textarea id="test-custom" placeholder="custom prompt (used when scenario = custom)" style="display:none"></textarea>
+  <div id="test-result" style="margin-top:12px"></div>
+</div>
+
+<div class="card"><h2>Local Models</h2><div id="library"></div></div>
+
+<div class="card"><h2>Browse ollama.com/library <span style="color:var(--dim);font-size:10px;font-weight:400;margin-left:8px">cached <span id="lib-age">—</span></span></h2>
+  <div class="row" style="margin-bottom:8px">
+    <input id="lib-search" class="grow" placeholder="filter by name, description, capability (e.g. tools, vision, embedding) or size (8b, 32b, 70b)">
+    <select id="lib-sort">
+      <option value="pulls">sort: pulls</option>
+      <option value="updated">sort: updated</option>
+      <option value="name">sort: name</option>
+    </select>
+    <button id="lib-refresh">Refresh</button>
+  </div>
+  <div id="lib-remote" style="max-height:520px;overflow-y:auto"></div>
+</div>
+
+<div class="card"><h2>Pull Model</h2>
+  <div class="row">
+    <input id="pull-name" class="grow" placeholder="e.g. qwen3:32b or mannix/llama3.1-8b-abliterated:q8_0">
+    <button class="primary" id="pull-btn">Pull</button>
+  </div>
+  <div class="meta" style="margin-top:8px">progress shows in the Pull Status panel above</div>
+</div>
+
+<div class="card"><h2>Server Config (read-only)</h2><div id="config"></div></div>
+
+<script>
+const SCENARIOS = {
+  baseline:  "Baseline (3-word reply)",
+  reasoning: "Reasoning (bat & ball)",
+  coding:    "Coding (is_prime)",
+  needle29k: "Needle in 29K context",
+  tool_call: "Tool calling (weather)",
+  abliter:   "Abliteration probe",
+  custom:    "Custom prompt",
+};
+
+const el = id => document.getElementById(id);
+function ce(tag, opts={}, children=[]){
+  const e = document.createElement(tag);
+  if(opts.cls) e.className = opts.cls;
+  if(opts.text != null) e.textContent = opts.text;
+  if(opts.style) e.setAttribute('style', opts.style);
+  if(opts.attrs) for(const [k,v] of Object.entries(opts.attrs)) e.setAttribute(k,v);
+  for(const c of children){ if(c) e.appendChild(c); }
+  return e;
+}
+function fmtBytes(b){
+  if(!b) return '—';
+  const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024 && i<u.length-1){b/=1024;i++;}
+  return b.toFixed(1)+' '+u[i];
+}
+function relTime(iso){
+  const d=new Date(iso); const s=Math.round((d-Date.now())/1000);
+  if(isNaN(s)) return '—';
+  return s>0 ? 'in '+s+'s' : Math.abs(s)+'s ago';
+}
+async function api(method, path, body){
+  const r = await fetch(path, {method, headers:body?{'Content-Type':'application/json'}:undefined, body:body?JSON.stringify(body):undefined});
+  if(!r.ok) throw new Error(`${method} ${path} ${r.status}: ${await r.text()}`);
+  return r.json();
+}
+
+async function refresh(){
+  try{
+    const s = await api('GET', '/api/state');
+    // Loaded models
+    if(!s.loaded.length){ el('loaded').replaceChildren(ce('div',{cls:'empty',text:'no models loaded'})); }
+    else {
+      const t = ce('table');
+      t.appendChild(ce('tr',{},['name','vram','ctx','expires',''].map(h=>ce('th',{text:h}))));
+      for(const m of s.loaded){
+        const sz = fmtBytes(m.size_vram || m.size);
+        const btn = ce('button', {cls:'danger', text:'Unload', attrs:{'data-name':m.name}});
+        btn.onclick = async () => { btn.disabled=true; try{ await api('POST','/api/control/unload',{name:m.name}); } catch(e){ alert(e); btn.disabled=false; } refresh(); };
+        const row = ce('tr',{},[m.name,sz,m.context_length||'—',relTime(m.expires_at),''].map(c=>ce('td',{text:c==null?'—':String(c)})));
+        row.lastChild.replaceChildren(btn);
+        t.appendChild(row);
+      }
+      el('loaded').replaceChildren(t);
+    }
+    // Library
+    const t = ce('table');
+    t.appendChild(ce('tr',{},['name','size','modified',''].map(h=>ce('th',{text:h}))));
+    const sel = el('test-model'); const cur = sel.value;
+    sel.replaceChildren();
+    for(const m of s.library){
+      const sz = fmtBytes(m.size);
+      const mod = m.modified_at ? relTime(m.modified_at) : '—';
+      const del = ce('button',{cls:'danger',text:'Delete'});
+      del.onclick = async () => {
+        if(!confirm(`Delete ${m.name}?`)) return;
+        del.disabled = true;
+        try{ await api('DELETE','/api/control/model',{name:m.name}); refresh(); }
+        catch(e){ alert(e); del.disabled=false; }
+      };
+      const test = ce('button',{text:'Test'});
+      test.onclick = () => { el('test-model').value = m.name; el('test-scenario').value='baseline'; el('run-test').click(); document.querySelector('h2').scrollIntoView(); };
+      const actions = ce('td',{},[del, ce('span',{text:' '}), test]);
+      const row = ce('tr',{},[ce('td',{text:m.name}), ce('td',{text:sz}), ce('td',{text:mod}), actions]);
+      t.appendChild(row);
+      const opt = ce('option',{text:m.name,attrs:{value:m.name}});
+      sel.appendChild(opt);
+    }
+    el('library').replaceChildren(t);
+    if(cur && Array.from(sel.options).some(o=>o.value===cur)) sel.value = cur;
+    // Config
+    const cfg = s.server_config || {};
+    if(cfg.error){ el('config').replaceChildren(ce('div',{cls:'empty',text:'config: '+cfg.error})); }
+    else {
+      const env = cfg.env || {};
+      const t = ce('table');
+      t.appendChild(ce('tr',{},['key','value'].map(h=>ce('th',{text:h}))));
+      for(const [k,v] of Object.entries(env)){
+        t.appendChild(ce('tr',{},[ce('td',{text:k}), ce('td',{text:v,style:'color:#a78bfa'})]));
+      }
+      const note = ce('div',{cls:'meta',text:'edit '+cfg.path+' then `sudo systemctl daemon-reload && sudo systemctl restart ollama`'});
+      el('config').replaceChildren(t, note);
+    }
+  } catch(e){
+    console.error(e);
+  }
+}
+
+function fmtRate(bps){
+  if(!bps || bps < 1) return '—';
+  if(bps < 1024) return bps.toFixed(0)+' B/s';
+  if(bps < 1024*1024) return (bps/1024).toFixed(0)+' KB/s';
+  return (bps/(1024*1024)).toFixed(1)+' MB/s';
+}
+function fmtETA(s){
+  if(!s || !isFinite(s) || s < 0) return '—';
+  if(s < 60) return Math.round(s)+'s';
+  if(s < 3600) return Math.floor(s/60)+'m '+Math.round(s%60)+'s';
+  return Math.floor(s/3600)+'h '+Math.round((s%3600)/60)+'m';
+}
+function fmtElapsed(seconds){
+  const s = Math.round(seconds);
+  if(s < 60) return s+'s';
+  if(s < 3600) return Math.floor(s/60)+'m '+(s%60)+'s';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+async function refreshPulls(){
+  try{
+    const pulls = await api('GET','/api/control/pulls');
+    const wrap = el('pulls-view');
+    const entries = Object.entries(pulls).sort((a,b) => (b[1].started||0) - (a[1].started||0));
+
+    let active = 0, done = 0, errored = 0;
+    for(const [,p] of entries){
+      if(p.error) errored++;
+      else if(p.done) done++;
+      else active++;
+    }
+    el('pulls-summary').textContent = entries.length
+      ? `${active} active · ${done} done · ${errored} errors`
+      : '— no pulls';
+
+    if(!entries.length){
+      wrap.replaceChildren(ce('div',{cls:'empty',text:'no pulls — start one in the Pull Model section below'}));
+      return;
+    }
+    wrap.replaceChildren();
+    for(const [name, p] of entries){
+      const card = ce('div', {style:`border:1px solid ${p.error?'#5c2828':p.done?'#1f4a2f':'#3d3a18'};border-radius:6px;padding:10px;margin-bottom:8px;background:${p.error?'rgba(252,165,165,.05)':p.done?'rgba(134,239,172,.05)':'rgba(252,211,77,.05)'}`});
+      const statusText = p.error ? p.error : p.status || '—';
+      const statusPill = p.error
+        ? ce('span',{cls:'pill bad',text:'error'})
+        : p.done
+        ? ce('span',{cls:'pill good',text:'done'})
+        : ce('span',{cls:'pill warn',text:'pulling'});
+      const header = ce('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px'},[
+        ce('span',{text:name,style:'color:var(--accent2);font-weight:600;font-size:13px'}),
+        statusPill,
+      ]);
+      card.appendChild(header);
+      card.appendChild(ce('div',{text:statusText,style:'font-size:11px;color:var(--dim);margin-bottom:6px'}));
+
+      if(p.total){
+        const pct = (p.completed/p.total*100);
+        const bar = ce('div',{cls:'bar',style:'margin:6px 0'},[ce('div',{style:`width:${pct}%`})]);
+        card.appendChild(bar);
+        const eta = (p.rate_bps > 0 && !p.done) ? (p.total - p.completed) / p.rate_bps : null;
+        const elapsed = p.started ? ((p.finished||Date.now()/1000) - p.started) : 0;
+        const stats = ce('div',{style:'display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums'},[
+          ce('span',{},[ce('span',{text:'transferred ',style:'color:var(--dim)'}), ce('span',{text:`${fmtBytes(p.completed)} / ${fmtBytes(p.total)}`,style:'color:var(--text)'})]),
+          ce('span',{},[ce('span',{text:'progress ',style:'color:var(--dim)'}), ce('span',{text:pct.toFixed(1)+'%',style:'color:var(--text)'})]),
+          ce('span',{},[ce('span',{text:'rate ',style:'color:var(--dim)'}), ce('span',{text:fmtRate(p.rate_bps),style:'color:var(--accent)'})]),
+          ce('span',{},[ce('span',{text:'eta ',style:'color:var(--dim)'}), ce('span',{text:p.done?'—':fmtETA(eta),style:'color:var(--text)'})]),
+          ce('span',{},[ce('span',{text:'elapsed ',style:'color:var(--dim)'}), ce('span',{text:fmtElapsed(elapsed),style:'color:var(--text)'})]),
+        ]);
+        card.appendChild(stats);
+      }
+      wrap.appendChild(card);
+    }
+  } catch(e){}
+}
+el('pulls-clear').onclick = async () => {
+  try{ await api('POST','/api/control/pulls/clear',{}); refreshPulls(); } catch(e){ alert(e); }
+};
+
+// Remote library browser
+let LIB_DATA = [];
+function pullsToNum(s){
+  if(!s) return 0;
+  const m = String(s).match(/^([\d.]+)\s*([KMB])?/i);
+  if(!m) return 0;
+  const n = parseFloat(m[1]); const u = (m[2]||'').toUpperCase();
+  return n * (u==='B'?1e9:u==='M'?1e6:u==='K'?1e3:1);
+}
+function renderLibrary(){
+  const q = (el('lib-search').value || '').toLowerCase().trim();
+  const sort = el('lib-sort').value;
+  const filter = m => {
+    if(!q) return true;
+    const hay = (m.name+' '+m.description+' '+m.capabilities.join(' ')+' '+m.sizes.join(' ')).toLowerCase();
+    return q.split(/\s+/).every(t => hay.includes(t));
+  };
+  const sorters = {
+    pulls:   (a,b) => pullsToNum(b.pulls) - pullsToNum(a.pulls),
+    name:    (a,b) => a.name.localeCompare(b.name),
+    updated: (a,b) => (a.updated||'').localeCompare(b.updated||''),  // textual; coarse
+  };
+  const items = LIB_DATA.filter(filter).sort(sorters[sort] || sorters.pulls);
+  const wrap = el('lib-remote');
+  if(!items.length){ wrap.replaceChildren(ce('div',{cls:'empty',text:'no matches'})); return; }
+  wrap.replaceChildren();
+  for(const m of items.slice(0, 200)){
+    const card = ce('div', {style:'border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px'});
+    const header = ce('div',{style:'display:flex;justify-content:space-between;gap:8px;align-items:start'});
+    const left = ce('div',{style:'flex:1;min-width:0'});
+    left.appendChild(ce('div',{text:m.name,style:'color:var(--accent2);font-weight:600;font-size:13px'}));
+    if(m.description) left.appendChild(ce('div',{text:m.description,style:'color:var(--text);font-size:12px;margin-top:2px'}));
+    const tags = ce('div',{style:'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px'});
+    for(const c of m.capabilities) tags.appendChild(ce('span',{cls:'pill',text:c,style:'background:rgba(167,139,250,.15);color:#a78bfa'}));
+    for(const s of m.sizes) tags.appendChild(ce('span',{cls:'pill dim',text:s}));
+    if(m.pulls) tags.appendChild(ce('span',{cls:'pill dim',text:m.pulls+' pulls'}));
+    if(m.updated) tags.appendChild(ce('span',{cls:'pill dim',text:m.updated}));
+    left.appendChild(tags);
+    const right = ce('div',{style:'display:flex;flex-direction:column;gap:4px'});
+    if(m.sizes.length){
+      for(const s of m.sizes){
+        const b = ce('button',{text:`pull :${s}`,style:'font-size:10px'});
+        b.onclick = () => { el('pull-name').value = `${m.name}:${s}`; el('pull-btn').click(); };
+        right.appendChild(b);
+      }
+    } else {
+      const b = ce('button',{text:'pull',style:'font-size:10px'});
+      b.onclick = () => { el('pull-name').value = m.name; el('pull-btn').click(); };
+      right.appendChild(b);
+    }
+    header.appendChild(left); header.appendChild(right);
+    card.appendChild(header);
+    wrap.appendChild(card);
+  }
+  if(LIB_DATA.length > 200){
+    wrap.appendChild(ce('div',{cls:'meta',text:`showing 200 of ${LIB_DATA.length} (refine search)`}));
+  }
+}
+async function refreshRemoteLibrary(force=false){
+  try{
+    const r = await api('GET', '/api/control/library_remote' + (force?'?refresh=1':''));
+    LIB_DATA = r.data || [];
+    el('lib-age').textContent = r.cached_age_s != null ? (r.cached_age_s===0 ? 'fresh' : `${Math.round(r.cached_age_s/60)}m old`) : '—';
+    renderLibrary();
+  } catch(e){
+    el('lib-remote').replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message}));
+  }
+}
+el('lib-search').oninput = renderLibrary;
+el('lib-sort').onchange = renderLibrary;
+el('lib-refresh').onclick = () => refreshRemoteLibrary(true);
+refreshRemoteLibrary();
+
+// Pull
+el('pull-btn').onclick = async () => {
+  const name = el('pull-name').value.trim();
+  if(!name) return;
+  try{ await api('POST','/api/control/pull',{name}); el('pull-name').value=''; refreshPulls(); }
+  catch(e){ alert(e); }
+};
+
+// Scenario dropdown
+const ssel = el('test-scenario');
+for(const [k,label] of Object.entries(SCENARIOS)){
+  ssel.appendChild(ce('option',{text:label,attrs:{value:k}}));
+}
+ssel.onchange = () => { el('test-custom').style.display = ssel.value === 'custom' ? 'block' : 'none'; };
+
+// Run test
+el('run-test').onclick = async () => {
+  const model = el('test-model').value, scenario = el('test-scenario').value;
+  const custom = el('test-custom').value;
+  const out = el('test-result');
+  out.replaceChildren(ce('div',{cls:'empty',text:`running ${scenario} on ${model}…`}));
+  el('run-test').disabled = true;
+  try{
+    const r = await api('POST','/api/control/test',{model, scenario, custom_prompt:custom});
+    if(!r.ok){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+r.error})); return; }
+    const stats = r.stats || {};
+    const statBlock = ce('div',{},[
+      stat('model', r.model), stat('scenario', r.scenario),
+      stat('eval', `${stats.eval_tokens} tok @ ${stats.eval_rate} t/s`),
+      stat('prefill', stats.prompt_tokens ? `${stats.prompt_tokens} tok @ ${stats.prompt_rate} t/s` : '—'),
+      stat('wall', stats.wall_seconds + 's'),
+    ]);
+    const items = [statBlock];
+    if(r.thinking) items.push(ce('div',{cls:'meta',text:'thinking',style:'margin-top:8px'}), ce('pre',{cls:'thinking',text:r.thinking}));
+    if(r.content)  items.push(ce('div',{cls:'meta',text:'content', style:'margin-top:8px'}), ce('pre',{cls:'content',text:r.content}));
+    if(r.tool_calls && r.tool_calls.length){
+      items.push(ce('div',{cls:'meta',text:'tool calls', style:'margin-top:8px'}));
+      items.push(ce('pre',{cls:'content',text:JSON.stringify(r.tool_calls,null,2)}));
+    }
+    out.replaceChildren(...items);
+  } catch(e){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message})); }
+  finally{ el('run-test').disabled = false; }
+};
+function stat(k,v){ return ce('span',{cls:'stat'},[ce('div',{cls:'k',text:k}), ce('div',{cls:'v',text:v==null?'—':String(v)})]); }
+
+refresh(); setInterval(refresh, 3000);
+refreshPulls(); setInterval(refreshPulls, 1000);
+</script>
+</body></html>
