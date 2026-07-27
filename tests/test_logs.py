@@ -95,9 +95,62 @@ class TestLogFiles(unittest.TestCase):
         self.assertEqual(logs.log_files("/nonexistent/path/xyz"), [])
 
 
+class TestTailLines(unittest.TestCase):
+    def test_returns_only_the_tail(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.log")
+            with open(p, "w") as f:
+                f.write("\n".join(f"line{i}" for i in range(1000)) + "\n")
+            got = logs.tail_lines(p, 40)
+            self.assertLess(len(got), 10)
+            self.assertEqual(got[-1], "line999")
+
+    def test_drops_the_partial_leading_line(self):
+        """A byte-offset read lands mid-line; that fragment must be discarded."""
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.log")
+            with open(p, "w") as f:
+                f.write("AAAAAAAAAA\nBBBBBBBBBB\nCCCCCCCCCC\n")
+            got = logs.tail_lines(p, 16)
+            self.assertNotIn("AAAAAAAAAA", got)
+            self.assertEqual(got[-1], "CCCCCCCCCC")
+
+    def test_whole_file_when_smaller_than_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.log")
+            with open(p, "w") as f: f.write("one\ntwo\n")
+            self.assertEqual(logs.tail_lines(p, 1 << 20), ["one", "two"])
+
+    def test_missing_file_yields_empty(self):
+        self.assertEqual(logs.tail_lines("/nonexistent/x.log", 1024), [])
+
+
 class TestReadWindow(unittest.TestCase):
-    def test_spans_two_files_when_newest_is_short(self):
-        """A window wider than the newest file must reach into the previous day."""
+    def test_spans_two_files_when_newest_does_not_cover_the_window(self):
+        """A window reaching past the newest file must walk into the previous
+        day's file, so the daily rollover does not truncate it."""
+        now = time.time()
+        recent = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 30))
+        older = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 60))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "2026-07"))
+            old = os.path.join(d, "2026-07", "2026-07-25.1.log")
+            new = os.path.join(d, "2026-07", "2026-07-26.1.log")
+            # Both entries sit inside the window, so the newest file alone
+            # cannot cover it and the reader must continue into the older one.
+            with open(old, "w") as f:
+                f.write(f"[{older}][DEBUG] Received request: POST to /v1/embeddings\n")
+            with open(new, "w") as f:
+                f.write(f"[{recent}][DEBUG] Received request: POST to /v1/chat/completions\n")
+            os.utime(old, (1000, 1000))
+            os.utime(new, (2000, 2000))
+            rows = logs.read_window(d, window_sec=300)
+            self.assertEqual([r["path"] for r in rows],
+                             ["/v1/embeddings", "/v1/chat/completions"])
+
+    def test_stops_early_once_the_window_is_covered(self):
+        """If the newest file already reaches past the cutoff, older files are
+        not read at all — that is what keeps the per-poll I/O bounded."""
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "2026-07"))
             old = os.path.join(d, "2026-07", "2026-07-25.1.log")
@@ -106,14 +159,40 @@ class TestReadWindow(unittest.TestCase):
                 f.write("[2026-07-25 10:00:00][DEBUG] Received request: POST to /v1/embeddings\n")
             with open(new, "w") as f:
                 f.write("[2026-07-26 10:00:00][DEBUG] Received request: POST to /v1/chat/completions\n")
-            os.utime(old, (1000, 1000))
-            os.utime(new, (2000, 2000))
-            rows = logs.read_window(d, n_lines=50)
-            self.assertEqual([r["path"] for r in rows],
-                             ["/v1/embeddings", "/v1/chat/completions"])
+            os.utime(old, (1000, 1000)); os.utime(new, (2000, 2000))
+            rows = logs.read_window(d, window_sec=300)
+            self.assertEqual([r["path"] for r in rows], ["/v1/chat/completions"])
+
+    def test_recent_events_survive_a_flood_of_body_continuation_lines(self):
+        """The regression that motivated byte-based windowing: LM Studio logs
+        full request bodies, so a line-count window fills with JSON and pushes
+        every real event out."""
+        now = time.time()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 10))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "2026-07"))
+            p = os.path.join(d, "2026-07", "2026-07-26.1.log")
+            with open(p, "w") as f:
+                f.write(f"[{stamp}][DEBUG] Received request: POST to /v1/chat/completions\n")
+                # the kind of body spam that swamped the old line budget
+                f.write("".join('      "key": "value",\n' for _ in range(5000)))
+            rows = logs.read_window(d)
+            self.assertEqual([r["path"] for r in rows], ["/v1/chat/completions"])
+            self.assertEqual(logs.stats(rows)["count"], 1)
+
+    def test_caps_returned_rows(self):
+        now = time.time()
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 5))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "2026-07"))
+            p = os.path.join(d, "2026-07", "a.log")
+            with open(p, "w") as f:
+                for _ in range(50):
+                    f.write(f"[{stamp}][DEBUG] Received request: POST to /v1/chat/completions\n")
+            self.assertEqual(len(logs.read_window(d, max_rows=10)), 10)
 
     def test_missing_dir_yields_empty(self):
-        self.assertEqual(logs.read_window("/nonexistent/xyz", n_lines=10), [])
+        self.assertEqual(logs.read_window("/nonexistent/xyz"), [])
 
 
 def _rows(now, *specs):

@@ -299,6 +299,7 @@ def state():
     push_history(g)
     rows = logs.read_window()
     cfg = settings()
+    loaded = lmstudio.loaded_models()
     return {
         "now": datetime.now().isoformat(timespec="seconds"),
         "dash_uptime_s": int(time.time() - START),
@@ -306,8 +307,8 @@ def state():
         "gpu_processes": gpu_processes(),
         "gpu_versions": nvidia_versions(),
         "gpu_history": get_history(),
-        "loaded": lmstudio.loaded_models(),
-        "library": lmstudio.library(),
+        "loaded": loaded,
+        "library": lmstudio.library(loaded),
         "requests": rows[-30:][::-1],
         "stats_5m": logs.stats(rows),
         "top_endpoints": logs.top_endpoints(rows),

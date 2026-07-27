@@ -122,6 +122,16 @@ def api_states(payload):
             if isinstance(m, dict) and m.get("id")}
 
 
+def states_from_loaded(loaded):
+    """Normalized `lms ps` rows -> {model key: state}.
+
+    Preferred over api_states for the live path: hitting /api/v0/models on
+    every poll writes a log line each time, and those lines crowd the very
+    request window the dashboard is trying to display.
+    """
+    return {m["model_key"]: "loaded" for m in loaded or [] if m.get("model_key")}
+
+
 def join_library(disk, states):
     for m in disk:
         m["loaded"] = states.get(m.get("model_key")) == "loaded"
@@ -156,16 +166,18 @@ def _api_models():
         return {}
 
 
-def library():
+def library(loaded=None):
     """Models on disk, annotated with load state.
 
     Reads disk via the CLI so the library still renders when the server is down.
+    Pass the already-fetched `lms ps` rows to avoid a second call.
     """
     try:
         disk = normalize_disk(run_lms_json("ls", "--json", timeout=5))
     except LmsError:
         return []
-    return join_library(disk, api_states(_api_models()))
+    if loaded is None: loaded = loaded_models()
+    return join_library(disk, states_from_loaded(loaded))
 
 
 def engine_info():

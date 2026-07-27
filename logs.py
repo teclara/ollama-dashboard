@@ -9,7 +9,9 @@ import glob, os, re, time
 from collections import defaultdict
 from datetime import datetime
 
-from config import LOG_DIR, LOG_WINDOW_LINES, NOISE_PATHS, STATS_WINDOW_SEC
+from config import (
+    LOG_DIR, LOG_TAIL_BYTES, LOG_WINDOW_LINES, NOISE_PATHS, STATS_WINDOW_SEC,
+)
 
 _TS = r"\[(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]"
 
@@ -84,25 +86,48 @@ def log_files(log_dir=None):
         return []
 
 
-def read_window(log_dir=None, n_lines=None):
-    """Last `n_lines` lines across the newest log files, oldest row first.
+def tail_lines(path, nbytes):
+    """Last `nbytes` of a file as lines, dropping any partial leading line."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - nbytes)
+            f.seek(start)
+            data = f.read()
+    except Exception:
+        return []
+    text = data.decode("utf-8", errors="replace")
+    if start and "\n" in text:
+        text = text.split("\n", 1)[1]
+    return text.splitlines()
 
-    Reads backwards through files until the budget is filled, so a window that
-    straddles midnight is not truncated by the daily rollover.
+
+def read_window(log_dir=None, window_sec=None, tail_bytes=None, max_rows=None):
+    """Parsed rows covering at least the last `window_sec`, oldest first.
+
+    Reading a fixed number of *lines* does not work here. LM Studio logs full
+    request bodies at DEBUG, so a single chat completion emits hundreds of
+    untimestamped JSON continuation lines — measured on this machine, 528 of
+    any 600 consecutive lines were body continuations, and 600 lines spanned
+    only 11 seconds. A line budget large enough for a 5-minute window would be
+    unbounded. So read by bytes from the tail instead and stop once the parsed
+    rows actually reach back past the cutoff, walking into older files so the
+    daily rollover does not truncate the window.
     """
-    n_lines = n_lines or LOG_WINDOW_LINES
-    chunks, budget = [], n_lines
+    window_sec = window_sec or STATS_WINDOW_SEC
+    tail_bytes = tail_bytes or LOG_TAIL_BYTES
+    max_rows = max_rows or LOG_WINDOW_LINES
+    cutoff = time.time() - window_sec
+
+    rows = []
     for path in log_files(log_dir):
-        if budget <= 0: break
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                tail = f.readlines()[-budget:]
-        except Exception:
-            continue
-        chunks.append(tail)
-        budget -= len(tail)
-    lines = [l for chunk in reversed(chunks) for l in chunk]
-    return parse_lines(lines)
+        rows = parse_lines(tail_lines(path, tail_bytes)) + rows
+        if rows and rows[0]["epoch"] and rows[0]["epoch"] <= cutoff:
+            break  # window covered
+        if len(rows) >= max_rows:
+            break
+    return rows[-max_rows:]
 
 
 # Aggregation ---------------------------------------------------------------

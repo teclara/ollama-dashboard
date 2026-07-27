@@ -50,7 +50,12 @@ HAYSTACK_WORDS = _env("LMSTUDIO_HAYSTACK_WORDS", 21000, int)
 # Rolling buffers and windows
 GPU_HISTORY_LEN = _env("LMSTUDIO_GPU_HISTORY_LEN", 60, int)
 PCIE_HISTORY_LEN = _env("LMSTUDIO_PCIE_HISTORY_LEN", 60, int)
+# Max parsed events retained. Note this is a cap on *events*, not raw lines:
+# LM Studio logs full request bodies, so raw lines vastly outnumber events.
 LOG_WINDOW_LINES = _env("LMSTUDIO_LOG_WINDOW_LINES", 600, int)
+# How much of each log file's tail to read per poll. Sized to comfortably span
+# STATS_WINDOW_SEC given LM Studio's very chatty DEBUG body logging.
+LOG_TAIL_BYTES = _env("LMSTUDIO_LOG_TAIL_BYTES", 4 << 20, int)
 STATS_WINDOW_SEC = _env("LMSTUDIO_STATS_WINDOW_SEC", 300, int)
 
 # Paths excluded from request stats (they're polled by the dashboard itself).
