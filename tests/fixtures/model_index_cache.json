@@ -1,0 +1,81 @@
+{
+  "models": [
+    {
+      "indexedModelIdentifier": "mradermacher/CyberPal2.0-20B-i1-GGUF/CyberPal2.0-20B.i1-MXFP4_MOE.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/models/mradermacher/CyberPal2.0-20B-i1-GGUF",
+      "containingDirSubpath": "mradermacher/CyberPal2.0-20B-i1-GGUF",
+      "sourceDirectoryType": "user",
+      "displayName": "CyberPal2.0 20B I1 MXFP4 MoE",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "qwen/qwen3.6-27b@lmstudio-community/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/hub/models/qwen/qwen3.6-27b",
+      "containingDirSubpath": "qwen/qwen3.6-27b",
+      "sourceDirectoryType": "hub",
+      "displayName": "Qwen3.6 27B",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "qwen/qwen3.6-27b",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/hub/models/qwen/qwen3.6-27b",
+      "containingDirSubpath": "qwen/qwen3.6-27b",
+      "sourceDirectoryType": "hub",
+      "displayName": "Qwen3.6 27B",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "lmstudio-community/Qwen3.6-27B-GGUF/Qwen3.6-27B-Q4_K_M.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/models/lmstudio-community/Qwen3.6-27B-GGUF",
+      "containingDirSubpath": "lmstudio-community/Qwen3.6-27B-GGUF",
+      "sourceDirectoryType": "user",
+      "displayName": "Qwen3.6 27B",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF/foundation-sec-8b-reasoning-q8_0.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/models/fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
+      "containingDirSubpath": "fdtn-ai/Foundation-Sec-8B-Reasoning-Q8_0-GGUF",
+      "sourceDirectoryType": "user",
+      "displayName": "Foundation Sec 8B Reasoning",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "google/gemma-4-31b@lmstudio-community/gemma-4-31B-it-GGUF/gemma-4-31B-it-Q4_K_M.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/hub/models/google/gemma-4-31b",
+      "containingDirSubpath": "google/gemma-4-31b",
+      "sourceDirectoryType": "hub",
+      "displayName": "Gemma 4 31B",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "google/gemma-4-31b",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/hub/models/google/gemma-4-31b",
+      "containingDirSubpath": "google/gemma-4-31b",
+      "sourceDirectoryType": "hub",
+      "displayName": "Gemma 4 31B",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "lmstudio-community/gemma-4-31B-it-GGUF/gemma-4-31B-it-Q4_K_M.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/models/lmstudio-community/gemma-4-31B-it-GGUF",
+      "containingDirSubpath": "lmstudio-community/gemma-4-31B-it-GGUF",
+      "sourceDirectoryType": "user",
+      "displayName": "Gemma 4 31B Instruct",
+      "domain": "llm"
+    },
+    {
+      "indexedModelIdentifier": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf",
+      "containingDirAbsolutePath": "/home/dubthecoder/.lmstudio/.internal/bundled-models/nomic-ai/nomic-embed-text-v1.5-GGUF",
+      "containingDirSubpath": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+      "sourceDirectoryType": "bundled",
+      "displayName": "Nomic Embed Text v1.5",
+      "domain": "embedding"
+    }
+  ],
+  "conflicts": [],
+  "unclassifiedFiles": [],
+  "unresolvedVirtualModels": [],
+  "badModels": [],
+  "errors": []
+}
