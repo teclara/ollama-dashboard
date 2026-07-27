@@ -197,6 +197,57 @@ def start_download(name):
     return True
 
 
+# lmstudio.ai/models catalog scrape ----------------------------------------
+
+_CAT_CACHE = {"data": [], "fetched": 0, "error": None}
+_CAT_LOCK = threading.Lock()
+
+# The page is a Next.js app, but the model cards are present in the server HTML.
+_CAT_CARD_RE = re.compile(r'href="/models/([^"]+)"(.*?)(?=href="/models/|$)', re.S)
+_CAT_NAME_RE = re.compile(r'class="text-lg font-medium">\s*([^<]+?)\s*<')
+# Anchored on the title attribute, which is more stable than the utility classes.
+_CAT_SIZE_RE = re.compile(r'title="Model size: ([^"]+?) parameters"')
+
+
+def parse_catalog_html(html):
+    out = []
+    for m in _CAT_CARD_RE.finditer(html or ""):
+        slug, body = m.group(1), m.group(2)
+        name = _CAT_NAME_RE.search(body)
+        if not name: continue  # not a model card
+        # Size badges are rendered twice (desktop + mobile); dedupe, keep order.
+        sizes, seen = [], set()
+        for s in _CAT_SIZE_RE.findall(body):
+            if s not in seen:
+                seen.add(s)
+                sizes.append(s)
+        out.append({"slug": slug, "name": _html_unescape(name.group(1)), "sizes": sizes})
+    return out
+
+
+def _fetch_catalog_html():
+    req = urllib.request.Request(CATALOG_URL, headers={"User-Agent": CATALOG_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def catalog(force=False):
+    now = time.time()
+    with _CAT_LOCK:
+        if not force and _CAT_CACHE["data"] and (now - _CAT_CACHE["fetched"]) < CATALOG_TTL_SEC:
+            return {"data": _CAT_CACHE["data"], "cached_age_s": int(now - _CAT_CACHE["fetched"])}
+    try:
+        data = parse_catalog_html(_fetch_catalog_html())
+        with _CAT_LOCK:
+            _CAT_CACHE.update({"data": data, "fetched": now, "error": None})
+        return {"data": data, "cached_age_s": 0}
+    except Exception as e:
+        with _CAT_LOCK:
+            _CAT_CACHE["error"] = str(e)
+            return {"data": _CAT_CACHE["data"], "error": str(e),
+                    "cached_age_s": int(now - _CAT_CACHE["fetched"])}
+
+
 # Benchmark scenarios ------------------------------------------------------
 
 # The needle and question are the canonical needle-in-haystack test answer,
