@@ -1,32 +1,16 @@
-"""Read-only state sources: GPU, logs, disk, service, tailscale, and the aggregate state() call."""
-import json, os, re, subprocess, threading, time, urllib.request
-from collections import defaultdict, deque
+"""Read-only state sources: models, GPU, logs, disk, service, tailscale, and the aggregate state() call."""
+import json, os, re, subprocess, threading, time
+from collections import deque
 from datetime import datetime
 
+import logs
+import lmstudio
 from config import (
-    GPU_HISTORY_LEN, LOG_WINDOW_LINES, MODEL_DIRS, NOISE_PATHS, OLLAMA_URL,
-    PCIE_HISTORY_LEN, STATS_WINDOW_SEC, SYSTEMD_OVERRIDE_PATH, SYSTEMD_UNIT,
+    GPU_HISTORY_LEN, LMS_BIN, MODELS_DIR_FALLBACK, PCIE_HISTORY_LEN,
+    SETTINGS_PATH, SYSTEMD_UNIT, SYSTEMD_USER,
 )
 
 START = time.time()
-
-GIN_RE = re.compile(
-    r'\[GIN\]\s+(?P<ts>\S+\s+-\s+\S+)\s+\|\s+(?P<status>\d+)\s+\|\s+(?P<lat>\S+)\s+\|\s+(?P<ip>\S+)\s+\|\s+(?P<method>\S+)\s+"(?P<path>[^"]+)"'
-)
-LAT_RE = re.compile(r'^([\d.]+)\s*(µs|us|ms|s|m)$')
-
-
-def parse_latency_ms(s):
-    m = LAT_RE.match(s)
-    if not m: return None
-    n, u = float(m.group(1)), m.group(2)
-    return n / 1000 if u in ("µs", "us") else n if u == "ms" else n * 1000 if u == "s" else n * 60000
-
-
-def parse_log_ts(ts):  # "2026/05/01 - 11:08:32"
-    try: return datetime.strptime(ts, "%Y/%m/%d - %H:%M:%S").timestamp()
-    except Exception: return 0
-
 
 _THROTTLE_BITS = [
     (0x0000000000000001, "gpu_idle"),
@@ -107,136 +91,59 @@ def gpu_processes():
     return sorted(procs, key=lambda p: -p["vram_mb"])
 
 
-def loaded_models():
+# Settings and on-disk model store ------------------------------------------
+
+# Only these keys are ever exposed. settings.json also holds hfSearchToken and
+# hfDownloadToken; nothing outside this list may reach a response body.
+_SETTINGS_WHITELIST = ("downloadsFolder", "defaultContextLength",
+                       "modelLoadingGuardrails", "enableLocalService", "useHFProxy")
+
+
+def settings(path=None):
+    path = path or SETTINGS_PATH
     try:
-        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=2) as r:
-            return json.loads(r.read()).get("models", [])
-    except Exception:
-        return []
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception as e:
+        return {"path": path, "error": str(e)}
+    out = {"path": path}
+    out.update({k: raw[k] for k in _SETTINGS_WHITELIST if k in raw})
+    return out
 
 
-def all_models():
-    try:
-        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2) as r:
-            data = json.loads(r.read())
-        return sorted(
-            [{"name": m["name"], "size": m.get("size", 0), "modified_at": m.get("modified_at")}
-             for m in data.get("models", [])],
-            key=lambda x: x["name"],
-        )
-    except Exception:
-        return []
+def models_root(settings_dict):
+    return (settings_dict or {}).get("downloadsFolder") or MODELS_DIR_FALLBACK
 
 
-def parse_logs(window_lines=None):
-    window_lines = window_lines or LOG_WINDOW_LINES
-    try:
-        out = subprocess.check_output(
-            ["journalctl", "-u", SYSTEMD_UNIT, "-n", str(window_lines), "--no-pager", "-o", "cat"],
-            text=True, timeout=4,
-        )
-    except Exception:
-        return []
-    rows = []
-    for line in out.splitlines():
-        m = GIN_RE.search(line)
-        if not m or m.group("path") in NOISE_PATHS: continue
-        rows.append({
-            "ts": m.group("ts"),
-            "epoch": parse_log_ts(m.group("ts")),
-            "status": int(m.group("status")),
-            "latency": m.group("lat"),
-            "lat_ms": parse_latency_ms(m.group("lat")),
-            "ip": m.group("ip"),
-            "method": m.group("method"),
-            "path": m.group("path"),
-        })
-    return rows
-
-
-def stats(rows, window_sec=None):
-    window_sec = window_sec or STATS_WINDOW_SEC
-    now = time.time()
-    recent = [r for r in rows if r["epoch"] >= now - window_sec]
-    if not recent:
-        return {"window_sec": window_sec, "count": 0, "rps": 0, "avg_ms": None,
-                "p50_ms": None, "p95_ms": None, "errors": 0, "error_rate": 0}
-    lats = sorted([r["lat_ms"] for r in recent if r["lat_ms"] is not None])
-    n = len(lats)
-    p = lambda q: lats[min(n - 1, int(q * n))] if n else None
-    errs = sum(1 for r in recent if r["status"] >= 400)
-    return {
-        "window_sec": window_sec,
-        "count": len(recent),
-        "rps": round(len(recent) / window_sec, 2),
-        "avg_ms": round(sum(lats) / n, 1) if n else None,
-        "p50_ms": round(p(0.5), 1) if n else None,
-        "p95_ms": round(p(0.95), 1) if n else None,
-        "errors": errs,
-        "error_rate": round(errs / len(recent), 3),
-    }
-
-
-def top_clients(rows, window_sec=None, top=5):
-    window_sec = window_sec or STATS_WINDOW_SEC
-    now = time.time()
-    recent = [r for r in rows if r["epoch"] >= now - window_sec]
-    by_ip = defaultdict(lambda: {"count": 0, "last": 0, "errors": 0})
-    for r in recent:
-        b = by_ip[r["ip"]]
-        b["count"] += 1
-        b["last"] = max(b["last"], r["epoch"])
-        if r["status"] >= 400: b["errors"] += 1
-    return sorted(
-        [{"ip": ip, **v, "ago_s": int(now - v["last"])} for ip, v in by_ip.items()],
-        key=lambda x: -x["count"],
-    )[:top]
-
-
-def top_endpoints(rows, window_sec=None, top=8):
-    window_sec = window_sec or STATS_WINDOW_SEC
-    now = time.time()
-    recent = [r for r in rows if r["epoch"] >= now - window_sec]
-    by_path = defaultdict(lambda: {"count": 0, "lats": []})
-    for r in recent:
-        b = by_path[r["path"]]
-        b["count"] += 1
-        if r["lat_ms"] is not None: b["lats"].append(r["lat_ms"])
-    out = []
-    for path, b in by_path.items():
-        lats = sorted(b["lats"])
-        out.append({"path": path, "count": b["count"],
-                    "p50_ms": round(lats[len(lats) // 2], 1) if lats else None})
-    return sorted(out, key=lambda x: -x["count"])[:top]
-
-
-def disk():
+def disk(root=None):
+    root = root or models_root(settings())
     info = {"models_dir": None, "models_size": 0, "fs_used": 0, "fs_total": 0, "fs_free": 0}
-    for d in MODEL_DIRS:
-        if not os.path.isdir(d): continue
-        info["models_dir"] = d
-        try:
-            out = subprocess.check_output(["du", "-sb", d], text=True, timeout=10).split()[0]
-            info["models_size"] = int(out)
-        except Exception: pass
-        try:
-            st = os.statvfs(d)
-            info["fs_total"] = st.f_blocks * st.f_frsize
-            info["fs_free"] = st.f_bavail * st.f_frsize
-            info["fs_used"] = info["fs_total"] - info["fs_free"]
-        except Exception: pass
-        break
+    if not os.path.isdir(root): return info
+    info["models_dir"] = root
+    try:
+        info["models_size"] = int(
+            subprocess.check_output(["du", "-sb", root], text=True, timeout=10).split()[0])
+    except Exception: pass
+    try:
+        st = os.statvfs(root)
+        info["fs_total"] = st.f_blocks * st.f_frsize
+        info["fs_free"] = st.f_bavail * st.f_frsize
+        info["fs_used"] = info["fs_total"] - info["fs_free"]
+    except Exception: pass
     return info
 
 
+def _systemctl(*args):
+    cmd = ["systemctl"] + (["--user"] if SYSTEMD_USER else []) + list(args)
+    return subprocess.check_output(cmd, text=True, timeout=2)
+
+
 def service_info():
-    info = {"uptime_s": None, "pid": None, "rss_kb": None, "active": "unknown", "version": None}
+    info = {"uptime_s": None, "pid": None, "rss_kb": None, "active": "unknown",
+            "engine": {"name": None, "version": None}}
     try:
-        out = subprocess.check_output(
-            ["systemctl", "show", SYSTEMD_UNIT,
-             "--property=ActiveState,MainPID,ActiveEnterTimestampMonotonic"],
-            text=True, timeout=2,
-        )
+        out = _systemctl("show", SYSTEMD_UNIT,
+                         "--property=ActiveState,MainPID,ActiveEnterTimestampMonotonic")
         kv = dict(line.split("=", 1) for line in out.strip().splitlines() if "=" in line)
         info["active"] = kv.get("ActiveState", "unknown")
         pid = int(kv.get("MainPID", "0") or 0)
@@ -256,10 +163,7 @@ def service_info():
                 info["uptime_s"] = int(uptime - starttime / clk)
             except Exception: pass
     except Exception: pass
-    try:
-        with urllib.request.urlopen(f"{OLLAMA_URL}/api/version", timeout=1) as r:
-            info["version"] = json.loads(r.read()).get("version")
-    except Exception: pass
+    info["engine"] = lmstudio.engine_info()
     return info
 
 
@@ -390,25 +294,12 @@ def pcie():
         return {"latest": dict(_PCIE_LATEST), "history": list(_PCIE_HIST)}
 
 
-def server_config():
-    info = {"path": SYSTEMD_OVERRIDE_PATH, "env": {}, "raw": "", "readable": False}
-    try:
-        with open(SYSTEMD_OVERRIDE_PATH) as f:
-            raw = f.read()
-        info["raw"] = raw
-        info["readable"] = True
-        for line in raw.splitlines():
-            m = re.match(r'^Environment="?([^=]+)=([^"]*)"?$', line.strip())
-            if m: info["env"][m.group(1)] = m.group(2)
-    except Exception as e:
-        info["error"] = str(e)
-    return info
-
-
 def state():
     g = gpu()
     push_history(g)
-    rows = parse_logs()
+    rows = logs.read_window()
+    cfg = settings()
+    loaded = lmstudio.loaded_models()
     return {
         "now": datetime.now().isoformat(timespec="seconds"),
         "dash_uptime_s": int(time.time() - START),
@@ -416,15 +307,17 @@ def state():
         "gpu_processes": gpu_processes(),
         "gpu_versions": nvidia_versions(),
         "gpu_history": get_history(),
-        "loaded": loaded_models(),
-        "library": all_models(),
+        "loaded": loaded,
+        "library": lmstudio.library(loaded),
         "requests": rows[-30:][::-1],
-        "stats_5m": stats(rows),
-        "top_clients": top_clients(rows),
-        "top_endpoints": top_endpoints(rows),
-        "disk": disk(),
+        "stats_5m": logs.stats(rows),
+        "top_endpoints": logs.top_endpoints(rows),
+        "model_activity": logs.model_activity(rows),
+        "disk": disk(models_root(cfg)),
         "service": service_info(),
         "tailscale": tailscale(),
         "pcie": pcie(),
         "host": host(),
+        "settings": cfg,
+        "lms_ok": os.access(LMS_BIN, os.X_OK),
     }

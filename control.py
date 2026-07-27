@@ -1,153 +1,251 @@
-"""Mutating actions: pulls, deletes, unloads, benchmark scenarios, and the public-library scrape."""
-import json, re, threading, time, urllib.request
+"""Mutating actions: loads, unloads, downloads, deletes, benchmarks, and the catalog scrape."""
+import json, os, re, shutil, subprocess, threading, time, urllib.request
 
 from config import (
-    HAYSTACK_PATH, HAYSTACK_WORDS, LIBRARY_TTL_SEC, LIBRARY_URL,
-    LIBRARY_USER_AGENT, OLLAMA_URL,
+    CATALOG_TTL_SEC, CATALOG_URL, CATALOG_USER_AGENT, HAYSTACK_PATH,
+    HAYSTACK_WORDS, HUB_MODELS_DIR, LMS_BIN, LMSTUDIO_URL,
 )
-
-# Public ollama.com/library scrape -----------------------------------------
-
-_LIB_CACHE = {"data": [], "fetched": 0, "error": None}
-_LIB_LOCK = threading.Lock()
-
-_LIB_CARD_RE = re.compile(
-    r'href="/library/([^"]+)"\s+class="group[^"]*"(.*?)(?=href="/library/|</div>\s*</div>\s*</main>)',
-    re.S,
-)
-_LIB_FIELD_RES = {
-    "desc":    re.compile(r'class="max-w-lg[^"]*">\s*([^<]+?)\s*</p>', re.S),
-    "size":    re.compile(r'x-test-size[^>]*>\s*([^<]+?)\s*</span>'),
-    "cap":     re.compile(r'x-test-capability[^>]*>\s*([^<]+?)\s*</span>'),
-    "pulls":   re.compile(r'x-test-pull-count[^>]*>\s*([^<]+?)\s*</span>'),
-    "tags":    re.compile(r'x-test-tag-count[^>]*>\s*([^<]+?)\s*</span>'),
-    "updated": re.compile(r'x-test-updated[^>]*>\s*([^<]+?)\s*</span>'),
-}
+import lmstudio
 
 
-def _fetch_library_html():
-    req = urllib.request.Request(LIBRARY_URL, headers={"User-Agent": LIBRARY_USER_AGENT})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return r.read().decode("utf-8", errors="replace")
-
+# Shared helpers ----------------------------------------------------------
 
 def _html_unescape(s):
     return (s.replace("&amp;", "&").replace("&#39;", "'").replace("&quot;", '"')
              .replace("&lt;", "<").replace("&gt;", ">"))
 
 
-def parse_library_html(html):
-    out = []
-    for m in _LIB_CARD_RE.finditer(html):
-        name, body = m.group(1), m.group(2)
-        item = {"name": name, "description": "", "sizes": [], "capabilities": [],
-                "pulls": "", "tags": "", "updated": ""}
-        d = _LIB_FIELD_RES["desc"].search(body)
-        if d: item["description"] = _html_unescape(d.group(1))
-        item["sizes"] = [s.strip().lower() for s in _LIB_FIELD_RES["size"].findall(body)]
-        item["capabilities"] = [c.strip().lower() for c in _LIB_FIELD_RES["cap"].findall(body)]
-        for k in ("pulls", "tags", "updated"):
-            v = _LIB_FIELD_RES[k].search(body)
-            if v: item[k] = v.group(1).strip()
-        out.append(item)
+# Background jobs (loads and downloads) ------------------------------------
+
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _set_job(key, job):
+    with _JOBS_LOCK:
+        _JOBS[key] = job
+
+
+def _update_job(key, **kw):
+    with _JOBS_LOCK:
+        if key in _JOBS: _JOBS[key].update(kw)
+
+
+def _claim_job(key, kind):
+    """Reserve a job slot. False if one is already running under this key."""
+    with _JOBS_LOCK:
+        existing = _JOBS.get(key)
+        if existing and not existing.get("done"): return False
+        _JOBS[key] = {"kind": kind, "status": "starting", "pct": None,
+                      "completed": 0, "total": 0, "error": None, "done": False,
+                      "started": time.time(), "finished": None, "last_line": ""}
+        return True
+
+
+def get_jobs():
+    with _JOBS_LOCK:
+        return {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
+                for k, v in _JOBS.items()}
+
+
+def clear_finished_jobs():
+    with _JOBS_LOCK:
+        for k in [k for k, v in _JOBS.items() if v.get("done")]:
+            del _JOBS[k]
+
+
+def clear_all_jobs():
+    with _JOBS_LOCK:
+        _JOBS.clear()
+
+
+# Progress parsing ----------------------------------------------------------
+#
+# `lms get` renders a live progress bar, so its output is NOT newline
+# delimited — it redraws with carriage returns and ANSI cursor escapes:
+#
+#   \r⠏ [████        ] 1.48% | 96.97 MB / 6.55 GB | 9.46 MB/s | ETA 11:22 \x1b[u
+#
+# Iterating the stream by lines would therefore yield one unterminated line
+# for the entire download and the UI would never update. _stream_segments
+# splits on CR as well as LF and strips the escape codes.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_BYTES_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*([KMGT]?B)\s*/\s*(\d+(?:\.\d+)?)\s*([KMGT]?B)", re.I)
+_RATE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGT]?B)/s", re.I)
+_ETA_RE = re.compile(r"ETA\s+(\S+)")
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+
+
+def clean_line(s):
+    """Strip ANSI escapes and the spinner/bar glyphs from a progress segment."""
+    return _ANSI_RE.sub("", s or "").strip()
+
+
+def parse_progress(line):
+    """Pull progress out of an `lms get`/`lms load` output segment.
+
+    Accepts a `<done> / <total>` byte pair (preferred, exact) or a bare
+    percentage, and returns None otherwise — an unrecognized segment leaves
+    the job in an indeterminate running state rather than failing it.
+    """
+    if not line: return None
+    line = clean_line(line)
+    out = {}
+    m = _BYTES_RE.search(line)
+    if m:
+        out["completed"] = int(float(m.group(1)) * _UNITS[m.group(2).upper()])
+        out["total"] = int(float(m.group(3)) * _UNITS[m.group(4).upper()])
+    m = _PCT_RE.search(line)
+    if m:
+        pct = float(m.group(1))
+        if 0 <= pct <= 100: out["pct"] = pct
+    if not out: return None
+    m = _RATE_RE.search(line)
+    if m:
+        out["rate_bps"] = int(float(m.group(1)) * _UNITS[m.group(2).upper()])
+    m = _ETA_RE.search(line)
+    if m: out["eta"] = m.group(1)
     return out
 
 
-def library_remote(force=False):
-    now = time.time()
-    with _LIB_LOCK:
-        if not force and _LIB_CACHE["data"] and (now - _LIB_CACHE["fetched"]) < LIBRARY_TTL_SEC:
-            return {"data": _LIB_CACHE["data"], "cached_age_s": int(now - _LIB_CACHE["fetched"])}
+def _stream_segments(stream, chunk_size=256):
+    """Yield output segments, splitting on CR as well as LF."""
+    buf = ""
+    while True:
+        chunk = stream.read(chunk_size)
+        if not chunk:
+            break
+        buf += chunk
+        parts = re.split(r"[\r\n]", buf)
+        buf = parts.pop()
+        for p in parts:
+            if p.strip(): yield p
+    if buf.strip(): yield buf
+
+
+def _run_job(key, args):
+    """Stream an `lms` subprocess into the job map."""
     try:
-        data = parse_library_html(_fetch_library_html())
-        with _LIB_LOCK:
-            _LIB_CACHE.update({"data": data, "fetched": now, "error": None})
-        return {"data": data, "cached_age_s": 0}
-    except Exception as e:
-        with _LIB_LOCK:
-            _LIB_CACHE["error"] = str(e)
-            return {"data": _LIB_CACHE["data"], "error": str(e),
-                    "cached_age_s": int(now - _LIB_CACHE["fetched"])}
+        proc = subprocess.Popen([LMS_BIN, *args], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except FileNotFoundError:
+        _update_job(key, error=f"lms CLI not found at {LMS_BIN}", done=True,
+                    finished=time.time())
+        return
+    _update_job(key, status="running")
+    for seg in _stream_segments(proc.stdout):
+        prog = parse_progress(seg)
+        if prog:
+            _update_job(key, **prog)
+        else:
+            cleaned = clean_line(seg)
+            if cleaned: _update_job(key, last_line=cleaned[:200])
+    code = proc.wait()
+    _update_job(key, done=True, finished=time.time(), status="finished",
+                error=None if code == 0 else f"lms exited {code}")
 
 
-# Pulls / deletes / unloads ------------------------------------------------
+# Load / unload -------------------------------------------------------------
 
-_PULLS = {}
-_PULLS_LOCK = threading.Lock()
-
-
-def _pull_thread(name):
-    with _PULLS_LOCK:
-        _PULLS[name] = {"status": "starting", "completed": 0, "total": 0, "error": None,
-                        "done": False, "started": time.time(), "finished": None,
-                        "rate_bps": 0, "_last_t": time.time(), "_last_c": 0}
-    try:
-        body = json.dumps({"name": name, "stream": True}).encode()
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/pull", data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=None) as r:
-            for line in r:
-                if not line.strip(): continue
-                try: ev = json.loads(line)
-                except Exception: continue
-                now = time.time()
-                with _PULLS_LOCK:
-                    p = _PULLS.get(name, {})
-                    if "status" in ev: p["status"] = ev["status"]
-                    if "total" in ev: p["total"] = ev["total"]
-                    if "completed" in ev:
-                        new_c = ev["completed"]
-                        dt = now - p.get("_last_t", now)
-                        if dt >= 0.5:
-                            dc = new_c - p.get("_last_c", new_c)
-                            p["rate_bps"] = max(0, dc / dt) if dt > 0 else 0
-                            p["_last_t"] = now
-                            p["_last_c"] = new_c
-                        p["completed"] = new_c
-                    if ev.get("error"): p["error"] = ev["error"]
-                    _PULLS[name] = p
-        with _PULLS_LOCK:
-            _PULLS[name]["done"] = True
-            _PULLS[name]["finished"] = time.time()
-            _PULLS[name]["rate_bps"] = 0
-    except Exception as e:
-        with _PULLS_LOCK:
-            _PULLS[name] = {**_PULLS.get(name, {}), "error": str(e), "done": True,
-                            "finished": time.time(), "rate_bps": 0}
+def build_load_args(model_key, context=None, gpu=None, ttl=None,
+                    parallel=None, identifier=None, estimate=False):
+    args = ["load", "-y", model_key]
+    for flag, val in (("-c", context), ("--gpu", gpu), ("--ttl", ttl),
+                      ("--parallel", parallel), ("--identifier", identifier)):
+        if val is not None and val != "":
+            args += [flag, str(val)]
+    if estimate: args.append("--estimate-only")
+    return args
 
 
-def start_pull(name):
-    with _PULLS_LOCK:
-        existing = _PULLS.get(name)
-        if existing and not existing.get("done"): return False
-    threading.Thread(target=_pull_thread, args=(name,), daemon=True).start()
+def start_load(model_key, **opts):
+    if not _claim_job(model_key, "load"): return False
+    args = build_load_args(model_key, **opts)
+    threading.Thread(target=_run_job, args=(model_key, args), daemon=True).start()
     return True
 
 
-def get_pulls():
-    with _PULLS_LOCK:
-        return {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
-                for k, v in _PULLS.items()}
+def estimate_load(model_key, **opts):
+    args = build_load_args(model_key, estimate=True, **opts)
+    try:
+        # `lms load --estimate-only` writes the whole estimate to stderr.
+        out = lmstudio.run_lms(*args, timeout=30, merge_stderr=True).strip()
+    except lmstudio.LmsError as e:
+        return {"ok": False, "error": str(e)}
+    if not out:
+        return {"ok": False, "error": "lms returned no estimate"}
+    return {"ok": True, "output": out}
 
 
-def clear_finished_pulls():
-    with _PULLS_LOCK:
-        for k in [k for k, v in _PULLS.items() if v.get("done")]:
-            del _PULLS[k]
+def unload_model(identifier):
+    lmstudio.run_lms("unload", identifier, timeout=30)
 
 
-def delete_model(name):
-    body = json.dumps({"name": name}).encode()
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/delete", data=body, method="DELETE",
-                                 headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10).read()
+def unload_all():
+    lmstudio.run_lms("unload", "--all", timeout=30)
 
 
-def unload_model(name):
-    body = json.dumps({"model": name, "keep_alive": 0}).encode()
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=body,
-                                 headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=10).read()
+# Download ------------------------------------------------------------------
+
+def start_download(name):
+    if not _claim_job(name, "download"): return False
+    threading.Thread(target=_run_job, args=(name, ["get", "-y", name]),
+                     daemon=True).start()
+    return True
+
+
+# lmstudio.ai/models catalog scrape ----------------------------------------
+
+_CAT_CACHE = {"data": [], "fetched": 0, "error": None}
+_CAT_LOCK = threading.Lock()
+
+# The page is a Next.js app, but the model cards are present in the server HTML.
+_CAT_CARD_RE = re.compile(r'href="/models/([^"]+)"(.*?)(?=href="/models/|$)', re.S)
+_CAT_NAME_RE = re.compile(r'class="text-lg font-medium">\s*([^<]+?)\s*<')
+# Anchored on the title attribute, which is more stable than the utility classes.
+_CAT_SIZE_RE = re.compile(r'title="Model size: ([^"]+?) parameters"')
+
+
+def parse_catalog_html(html):
+    out = []
+    for m in _CAT_CARD_RE.finditer(html or ""):
+        slug, body = m.group(1), m.group(2)
+        name = _CAT_NAME_RE.search(body)
+        if not name: continue  # not a model card
+        # Size badges are rendered twice (desktop + mobile); dedupe, keep order.
+        sizes, seen = [], set()
+        for s in _CAT_SIZE_RE.findall(body):
+            if s not in seen:
+                seen.add(s)
+                sizes.append(s)
+        out.append({"slug": slug, "name": _html_unescape(name.group(1)), "sizes": sizes})
+    return out
+
+
+def _fetch_catalog_html():
+    req = urllib.request.Request(CATALOG_URL, headers={"User-Agent": CATALOG_USER_AGENT})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def catalog(force=False):
+    now = time.time()
+    with _CAT_LOCK:
+        if not force and _CAT_CACHE["data"] and (now - _CAT_CACHE["fetched"]) < CATALOG_TTL_SEC:
+            return {"data": _CAT_CACHE["data"], "cached_age_s": int(now - _CAT_CACHE["fetched"])}
+    try:
+        data = parse_catalog_html(_fetch_catalog_html())
+        with _CAT_LOCK:
+            _CAT_CACHE.update({"data": data, "fetched": now, "error": None})
+        return {"data": data, "cached_age_s": 0}
+    except Exception as e:
+        with _CAT_LOCK:
+            _CAT_CACHE["error"] = str(e)
+            return {"data": _CAT_CACHE["data"], "error": str(e),
+                    "cached_age_s": int(now - _CAT_CACHE["fetched"])}
 
 
 # Benchmark scenarios ------------------------------------------------------
@@ -196,6 +294,39 @@ SCENARIOS = {
 }
 
 
+def map_chat_response(resp, scenario, model, wall_seconds):
+    """LM Studio's /api/v0/chat/completions response -> the results shape.
+
+    Throughput numbers come from the server's own `stats` block rather than
+    being recomputed from token counts and durations.
+    """
+    choices = resp.get("choices") or []
+    msg = (choices[0].get("message") or {}) if choices else {}
+    usage = resp.get("usage") or {}
+    st = resp.get("stats") or {}
+    return {
+        "ok": True,
+        "scenario": scenario,
+        "model": model,
+        "thinking": (msg.get("reasoning_content") or "").strip(),
+        "content": (msg.get("content") or "").strip(),
+        "tool_calls": msg.get("tool_calls") or [],
+        "stats": {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "reasoning_tokens": (usage.get("completion_tokens_details") or {})
+                                .get("reasoning_tokens", 0),
+            "tokens_per_second": st.get("tokens_per_second"),
+            "ttft_s": st.get("time_to_first_token"),
+            "generation_s": st.get("generation_time"),
+            "stop_reason": st.get("stop_reason"),
+            "wall_seconds": wall_seconds,
+        },
+        "model_info": resp.get("model_info") or {},
+        "runtime": resp.get("runtime") or {},
+    }
+
+
 def run_scenario(model, scenario, custom_prompt=None):
     if scenario == "custom":
         if not custom_prompt: return {"ok": False, "error": "custom prompt required"}
@@ -212,32 +343,121 @@ def run_scenario(model, scenario, custom_prompt=None):
         tools = WEATHER_TOOL if sc.get("tools") else None
 
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
-               "stream": False, "options": {"num_predict": npred}}
+               "stream": False, "max_tokens": npred}
     if tools is not None: payload["tools"] = tools
 
     t0 = time.time()
     try:
-        req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=json.dumps(payload).encode(),
-                                     headers={"Content-Type": "application/json"})
-        r = json.loads(urllib.request.urlopen(req, timeout=900).read())
+        req = urllib.request.Request(
+            f"{LMSTUDIO_URL}/api/v0/chat/completions", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        resp = json.loads(urllib.request.urlopen(req, timeout=900).read())
     except Exception as e:
         return {"ok": False, "error": str(e), "wall_seconds": round(time.time() - t0, 1)}
+    return map_chat_response(resp, scenario, model, round(time.time() - t0, 1))
 
-    msg = r.get("message", {}) or {}
-    pe = r.get("prompt_eval_count", 0)
-    pd = r.get("prompt_eval_duration", 1) / 1e9
-    eg = r.get("eval_count", 0)
-    ed = r.get("eval_duration", 1) / 1e9
-    return {
-        "ok": True,
-        "scenario": scenario,
-        "model": model,
-        "thinking": (msg.get("thinking") or "").strip(),
-        "content": (msg.get("content") or "").strip(),
-        "tool_calls": msg.get("tool_calls") or [],
-        "stats": {
-            "prompt_tokens": pe, "prompt_rate": round(pe / pd, 0) if pd else 0,
-            "eval_tokens": eg, "eval_rate": round(eg / ed, 0) if ed else 0,
-            "wall_seconds": round(time.time() - t0, 1),
-        },
-    }
+
+# Delete --------------------------------------------------------------------
+#
+# LM Studio has no delete API and `lms` has no remove command, so this removes
+# files directly. Paths come from LM Studio's own model index, never from the
+# `path` field of `lms ls` — that field is a real relative path for directly
+# downloaded models but a *virtual identifier* for catalog models, where the
+# weights live somewhere else entirely.
+
+def is_inside(root, path):
+    """True if `path` resolves strictly inside `root`. Symlink-aware."""
+    try:
+        root_r = os.path.realpath(root)
+        path_r = os.path.realpath(path)
+    except Exception:
+        return False
+    return path_r.startswith(root_r + os.sep) and path_r != root_r
+
+
+def _index_entries(index):
+    models = (index or {}).get("models")
+    return models if isinstance(models, list) else []
+
+
+def resolve_delete_targets(index, indexed_id, models_root, hub_root):
+    """Indexed model id -> the directories to remove.
+
+    Takes an `indexedModelIdentifier`, NOT a model key. Those coincide for
+    catalog models but not for directly downloaded ones, where the index is
+    keyed by the full `<publisher>/<repo>/<file>.gguf` path.
+
+    `user` models resolve to their own directory. `hub` models are virtual
+    pointers: their weights live in a separate `user` entry, found via the
+    `<id>@<concrete-path>` index entry. Both the weights and the stub go.
+    `bundled` models ship with LM Studio and are never deletable.
+    """
+    entries = _index_entries(index)
+    by_id = {e.get("indexedModelIdentifier"): e for e in entries if isinstance(e, dict)}
+
+    entry = by_id.get(indexed_id)
+    if entry is None:
+        return {"ok": False, "error": f"model {indexed_id} not found in the model index"}
+
+    kind = entry.get("sourceDirectoryType")
+    if kind == "bundled":
+        return {"ok": False, "error": f"{indexed_id} is a bundled model and cannot be deleted"}
+
+    targets = []
+    if kind == "hub":
+        # Find the "<id>@<concrete>" entry that names the real weights.
+        prefix = indexed_id + "@"
+        concrete_key = next((k[len(prefix):] for k in by_id if k.startswith(prefix)), None)
+        concrete = by_id.get(concrete_key) if concrete_key else None
+        if not concrete or not concrete.get("containingDirAbsolutePath"):
+            return {"ok": False,
+                    "error": f"could not resolve virtual model {indexed_id} to concrete weights"}
+        targets.append(concrete["containingDirAbsolutePath"])
+        if entry.get("containingDirAbsolutePath"):
+            targets.append(entry["containingDirAbsolutePath"])
+    elif kind == "user":
+        if not entry.get("containingDirAbsolutePath"):
+            return {"ok": False, "error": f"no directory recorded for {indexed_id}"}
+        targets.append(entry["containingDirAbsolutePath"])
+    else:
+        return {"ok": False, "error": f"unknown storage type {kind!r} for {indexed_id}"}
+
+    for t in targets:
+        if not (is_inside(models_root, t) or is_inside(hub_root, t)):
+            return {"ok": False,
+                    "error": f"refusing to delete {t}: outside the permitted model roots"}
+
+    return {"ok": True, "targets": sorted(set(targets))}
+
+
+def delete_model(model_key, confirm):
+    """Delete a model's files. `confirm` must equal `model_key` exactly."""
+    if not confirm or confirm != model_key:
+        return {"ok": False, "error": "confirmation must match the model key exactly"}
+
+    import sources  # local import: sources imports control-free modules only
+    loaded_now = lmstudio.loaded_models()
+    loaded = {m["identifier"] for m in loaded_now} | {m["model_key"] for m in loaded_now}
+    if model_key in loaded:
+        return {"ok": False, "error": f"{model_key} is loaded — unload it first"}
+
+    # The index is keyed by indexedModelIdentifier, which is not the model key
+    # for directly downloaded models. Translate before resolving.
+    indexed_id = next((m["indexed_id"] for m in lmstudio.library()
+                       if m["model_key"] == model_key), None)
+    if not indexed_id:
+        return {"ok": False, "error": f"unknown model {model_key}"}
+
+    cfg = sources.settings()
+    resolved = resolve_delete_targets(
+        lmstudio.model_index(), indexed_id, sources.models_root(cfg), HUB_MODELS_DIR)
+    if not resolved["ok"]: return resolved
+
+    removed = []
+    for t in resolved["targets"]:
+        try:
+            shutil.rmtree(t)
+            removed.append(t)
+        except Exception as e:
+            return {"ok": False, "error": f"failed removing {t}: {e}", "removed": removed}
+    return {"ok": True, "removed": removed}

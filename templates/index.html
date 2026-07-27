@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>ollama // devstation</title>
+<html><head><meta charset="utf-8"><title>lm studio // devstation</title>
 <style>
   :root{--bg:#0b0d12;--card:#141821;--border:#222936;--text:#e6e9ef;--dim:#7a8290;--accent:#7dd3fc;--accent2:#a78bfa;--good:#86efac;--warn:#fcd34d;--bad:#fca5a5}
   *{box-sizing:border-box}
@@ -36,7 +36,9 @@
 </style></head>
 <body>
 <nav style="display:flex;gap:16px;margin-bottom:16px;font-size:12px"><a href="/" style="color:#7dd3fc;text-decoration:none">▸ dashboard</a><a href="/control" style="color:#7a8290;text-decoration:none">control →</a></nav>
-<h1>ollama // <span>devstation</span></h1>
+<h1>lm studio // <span>devstation</span></h1>
+
+<div id="banner"></div>
 
 <div class="card"><h2>Loaded Models</h2><div id="loaded"></div></div>
 
@@ -52,7 +54,7 @@
 </div>
 
 <div class="grid-2">
-  <div class="card"><h2>Top Clients (5 min)</h2><div id="clients"></div></div>
+  <div class="card"><h2>Model Activity (5 min)</h2><div id="activity"></div></div>
   <div class="card"><h2>Top Endpoints (5 min)</h2><div id="endpoints"></div></div>
 </div>
 
@@ -97,16 +99,11 @@ function table(headers, rows){
   for(const r of rows) t.appendChild(r);
   return t;
 }
-function statusPill(s){
-  const cls = s>=500?'bad':s>=400?'warn':s>=200?'good':'dim';
-  return ce('span', {cls:'pill '+cls, text:String(s)});
-}
 function fmtBytes(b){
   if(!b) return '—';
   const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024 && i<u.length-1){b/=1024;i++;}
   return fmt(b)+' '+u[i];
 }
-function fmtMs(ms){ return ms == null ? '—' : ms < 1 ? fmt(ms,2)+' ms' : ms < 1000 ? fmt(ms,0)+' ms' : fmt(ms/1000,2)+' s'; }
 function fmtUptime(s){
   if(s == null) return '—';
   const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
@@ -114,11 +111,6 @@ function fmtUptime(s){
   if(h) return `${h}h ${m}m`;
   if(m) return `${m}m ${s%60}s`;
   return `${s}s`;
-}
-function relTime(iso){
-  const d=new Date(iso); const s=Math.round((d-Date.now())/1000);
-  if(isNaN(s)) return '—';
-  return s>0 ? 'in '+s+'s' : Math.abs(s)+'s ago';
 }
 function replace(target, child){
   target.textContent = '';
@@ -273,36 +265,57 @@ async function tick(){
       statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
       memBar,
     ]);
+    // lms CLI banner — a missing CLI empties four panels at once
+    if(s.lms_ok === false){
+      replace(el('banner'), ce('div', {cls:'card', style:'border-color:#fca5a5;color:#fca5a5',
+        text:'LM Studio CLI not found — model panels will stay empty. Set LMSTUDIO_LMS_BIN.'}));
+    } else { replace(el('banner'), null); }
+
     // Loaded
     if(!s.loaded.length){ replace(el('loaded'), ce('div', {cls:'empty', text:'no models loaded'})); }
     else {
       const rows = s.loaded.map(m => {
-        const sz = fmtBytes(m.size_vram || m.size);
-        const proc = m.size_vram && m.size ? Math.round(m.size_vram/m.size*100) : 100;
-        const dev = ce('span', {cls:'pill '+(proc===100?'good':'warn'), text: proc+'% GPU'});
-        return row([m.name, sz, m.context_length || '—', dev, relTime(m.expires_at)]);
+        const caps = ce('span', {}, [
+          m.vision ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'vision'}) : null,
+          m.tools ? ce('span',{cls:'pill dim',text:'tools'}) : null,
+        ]);
+        const stCls = m.status === 'generating' ? 'good' : 'dim';
+        const statusCell = ce('span', {}, [
+          ce('span',{cls:'pill '+stCls, text: m.status || '—'}),
+          m.queued ? ce('span',{cls:'pill warn',style:'margin-left:4px',text:m.queued+' queued'}) : null,
+        ]);
+        const ctx = m.context
+          ? `${(m.context/1024).toFixed(0)}K / ${(m.max_context/1024).toFixed(0)}K`
+          : '—';
+        return row([
+          m.identifier,
+          m.arch || '—',
+          m.quant || '—',
+          fmtBytes(m.size),
+          ctx,
+          m.parallel == null ? '—' : String(m.parallel),
+          m.ttl_s == null ? 'none' : fmtUptime(m.ttl_s),
+          statusCell,
+          caps,
+        ]);
       });
-      replace(el('loaded'), table(['name','vram','ctx','device','expires'], rows));
+      replace(el('loaded'), table(
+        ['identifier','arch','quant','size','ctx / max','par','ttl','status',''], rows));
     }
 
-    // Stats
+    // Stats. LM Studio's logs carry no status, latency, or client IP, so there
+    // are no percentile, error-rate, or per-client figures to show here.
     const st = s.stats_5m;
-    const errPill = st.error_rate > 0.05
-      ? ce('span',{cls:'pill bad', text:fmt(st.error_rate*100,1)+'%'})
-      : st.error_rate > 0
-      ? ce('span',{cls:'pill warn', text:fmt(st.error_rate*100,1)+'%'})
-      : ce('span',{cls:'pill good', text:'0%'});
-    const errStat = ce('div', {cls:'stat'}, [
-      ce('span',{cls:'k',text:'error rate'}),
-      ce('span',{cls:'v'}, [errPill]),
-    ]);
+    const act = s.model_activity || [];
+    const sum = k => act.reduce((n,a) => n + (a[k]||0), 0);
     replace(el('stats'), [
       statRow('requests', st.count),
       statRow('rps', st.rps),
-      statRow('avg latency', fmtMs(st.avg_ms)),
-      statRow('p50 latency', fmtMs(st.p50_ms)),
-      statRow('p95 latency', fmtMs(st.p95_ms)),
-      errStat,
+      statRow('completions', sum('completions')),
+      statRow('predictions', sum('predictions')),
+      statRow('tool calls', sum('tool_calls')),
+      ce('div', {cls:'meta', style:'text-align:left;margin-top:10px',
+                 text:'LM Studio logs carry no status, latency, or client IP.'}),
     ]);
 
     // Service
@@ -310,9 +323,11 @@ async function tick(){
     const activePill = sv.active === 'active'
       ? ce('span',{cls:'pill good',text:sv.active})
       : ce('span',{cls:'pill bad',text:sv.active});
+    const eng = sv.engine || {};
+    const engText = eng.name ? `${eng.name} @ ${eng.version}` : '—';
     replace(el('service'), [
-      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'ollama'}), ce('span',{cls:'v'},[activePill])]),
-      statRow('version', sv.version || '—'),
+      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'lmstudio-server'}), ce('span',{cls:'v'},[activePill])]),
+      statRow('engine', engText),
       statRow('uptime', fmtUptime(sv.uptime_s)),
       statRow('rss', sv.rss_kb ? fmtBytes(sv.rss_kb*1024) : '—'),
       statRow('models size', fmtBytes(dk.models_size)),
@@ -335,28 +350,31 @@ async function tick(){
       ]);
     }
 
-    // Top clients
-    if(!s.top_clients.length){ replace(el('clients'), ce('div',{cls:'empty',text:'no recent clients'})); }
+    // Model activity — replaces the old top-clients panel, which had no data
+    // source once the GIN logs went away.
+    if(!act.length){ replace(el('activity'), ce('div',{cls:'empty',text:'no recent inference'})); }
     else {
-      const rows = s.top_clients.map(c => {
-        const errs = c.errors > 0 ? ce('span',{cls:'pill warn',text:c.errors+' err'}) : '0';
-        return row([c.ip, c.count, errs, c.ago_s+'s ago']);
-      });
-      replace(el('clients'), table(['ip','count','errors','last seen'], rows));
+      const rows = act.map(a => row([
+        {cls:'path', text:a.model}, a.completions, a.predictions, a.tool_calls, a.streams]));
+      replace(el('activity'), table(['model','completions','predictions','tool calls','streams'], rows));
     }
 
     // Top endpoints
     if(!s.top_endpoints.length){ replace(el('endpoints'), ce('div',{cls:'empty',text:'no recent activity'})); }
     else {
-      const rows = s.top_endpoints.map(e => row([{cls:'path',text:e.path}, e.count, fmtMs(e.p50_ms)]));
-      replace(el('endpoints'), table(['path','count','p50'], rows));
+      const rows = s.top_endpoints.map(e => row([{cls:'path',text:e.path}, e.count]));
+      replace(el('endpoints'), table(['path','count'], rows));
     }
 
     // Recent requests
     if(!s.requests.length){ replace(el('reqs'), ce('div',{cls:'empty',text:'no recent requests'})); }
     else {
-      const rows = s.requests.map(r => row([r.ts, statusPill(r.status), r.method, {cls:'path',text:r.path}, r.latency, r.ip]));
-      replace(el('reqs'), table(['time','status','method','path','latency','client'], rows));
+      const rows = s.requests.map(r => row([
+        r.ts,
+        r.kind === 'request' ? r.method : ce('span',{cls:'pill dim',text:r.kind}),
+        {cls:'path', text: r.path || r.model || '—'},
+      ]));
+      replace(el('reqs'), table(['time','kind','path / model'], rows));
     }
 
     // Library
@@ -368,17 +386,38 @@ async function tick(){
       del.onmouseenter = () => { del.style.borderColor = '#fca5a5'; del.style.color = '#fca5a5'; };
       del.onmouseleave = () => { del.style.borderColor = '#2d3548'; del.style.color = '#e6e9ef'; };
       del.onclick = async () => {
-        if(!confirm(`Delete ${m.name}?`)) return;
+        // Deletion removes files from disk with no undo, so the API demands the
+        // model key typed back verbatim rather than a yes/no confirm.
+        const typed = prompt(`Deleting ${m.model_key} removes its files from disk.\n\nType the model key exactly to confirm:`);
+        if(typed == null) return;
+        if(typed !== m.model_key){ alert('Confirmation did not match. Nothing was deleted.'); return; }
         del.disabled = true; del.textContent = '…';
         try{
-          const r = await fetch('/api/control/model', {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:m.name})});
-          if(!r.ok) throw new Error(await r.text());
+          const r = await fetch('/api/control/model', {method:'DELETE', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({name:m.model_key, confirm:typed})});
+          const res = await r.json();
+          if(!r.ok || !res.ok) throw new Error(res.error || 'unknown error');
+          alert('Removed:\n' + (res.removed||[]).join('\n'));
           tick();
         } catch(e){ alert('Delete failed: '+e.message); del.disabled = false; del.textContent = 'Delete'; }
       };
-      return row([m.name, fmtBytes(m.size), del]);
+      const caps = ce('span', {}, [
+        m.loaded ? ce('span',{cls:'pill good',style:'margin-right:4px',text:'loaded'}) : null,
+        m.vision ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'vision'}) : null,
+        m.tools ? ce('span',{cls:'pill dim',text:'tools'}) : null,
+      ]);
+      return row([
+        m.model_key,
+        m.arch || '—',
+        m.params || '—',
+        m.quant || '—',
+        fmtBytes(m.size),
+        m.max_context ? (m.max_context/1024).toFixed(0)+'K' : '—',
+        caps,
+        del,
+      ]);
     });
-    replace(el('lib'), table(['name','size',''], libRows));
+    replace(el('lib'), table(['model','arch','params','quant','size','max ctx','',''], libRows));
 
     el('now').textContent = s.now;
     el('dashup').textContent = fmtUptime(s.dash_uptime_s);

@@ -1,0 +1,8 @@
+LLM ENGINE                                          SELECTED    MODEL FORMAT
+llama.cpp-linux-x86_64-avx2@2.24.0                                  GGUF    
+llama.cpp-linux-x86_64-nvidia-cuda-avx2@2.24.0                      GGUF    
+llama.cpp-linux-x86_64-nvidia-cuda12-avx2@2.27.1       ✓            GGUF    
+llama.cpp-linux-x86_64-nvidia-cuda12-avx2@2.27.0                    GGUF    
+llama.cpp-linux-x86_64-nvidia-cuda12-avx2@2.25.2                    GGUF    
+llama.cpp-linux-x86_64-nvidia-cuda12-avx2@2.24.0                    GGUF    
+llama.cpp-linux-x86_64-vulkan-avx2@2.24.0                           GGUF    
