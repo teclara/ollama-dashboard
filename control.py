@@ -15,6 +15,188 @@ def _html_unescape(s):
              .replace("&lt;", "<").replace("&gt;", ">"))
 
 
+# Background jobs (loads and downloads) ------------------------------------
+
+_JOBS = {}
+_JOBS_LOCK = threading.Lock()
+
+
+def _set_job(key, job):
+    with _JOBS_LOCK:
+        _JOBS[key] = job
+
+
+def _update_job(key, **kw):
+    with _JOBS_LOCK:
+        if key in _JOBS: _JOBS[key].update(kw)
+
+
+def _claim_job(key, kind):
+    """Reserve a job slot. False if one is already running under this key."""
+    with _JOBS_LOCK:
+        existing = _JOBS.get(key)
+        if existing and not existing.get("done"): return False
+        _JOBS[key] = {"kind": kind, "status": "starting", "pct": None,
+                      "completed": 0, "total": 0, "error": None, "done": False,
+                      "started": time.time(), "finished": None, "last_line": ""}
+        return True
+
+
+def get_jobs():
+    with _JOBS_LOCK:
+        return {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
+                for k, v in _JOBS.items()}
+
+
+def clear_finished_jobs():
+    with _JOBS_LOCK:
+        for k in [k for k, v in _JOBS.items() if v.get("done")]:
+            del _JOBS[k]
+
+
+def clear_all_jobs():
+    with _JOBS_LOCK:
+        _JOBS.clear()
+
+
+# Progress parsing ----------------------------------------------------------
+#
+# `lms get` renders a live progress bar, so its output is NOT newline
+# delimited — it redraws with carriage returns and ANSI cursor escapes:
+#
+#   \r⠏ [████        ] 1.48% | 96.97 MB / 6.55 GB | 9.46 MB/s | ETA 11:22 \x1b[u
+#
+# Iterating the stream by lines would therefore yield one unterminated line
+# for the entire download and the UI would never update. _stream_segments
+# splits on CR as well as LF and strips the escape codes.
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_BYTES_RE = re.compile(
+    r"(\d+(?:\.\d+)?)\s*([KMGT]?B)\s*/\s*(\d+(?:\.\d+)?)\s*([KMGT]?B)", re.I)
+_RATE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*([KMGT]?B)/s", re.I)
+_ETA_RE = re.compile(r"ETA\s+(\S+)")
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+
+
+def clean_line(s):
+    """Strip ANSI escapes and the spinner/bar glyphs from a progress segment."""
+    return _ANSI_RE.sub("", s or "").strip()
+
+
+def parse_progress(line):
+    """Pull progress out of an `lms get`/`lms load` output segment.
+
+    Accepts a `<done> / <total>` byte pair (preferred, exact) or a bare
+    percentage, and returns None otherwise — an unrecognized segment leaves
+    the job in an indeterminate running state rather than failing it.
+    """
+    if not line: return None
+    line = clean_line(line)
+    out = {}
+    m = _BYTES_RE.search(line)
+    if m:
+        out["completed"] = int(float(m.group(1)) * _UNITS[m.group(2).upper()])
+        out["total"] = int(float(m.group(3)) * _UNITS[m.group(4).upper()])
+    m = _PCT_RE.search(line)
+    if m:
+        pct = float(m.group(1))
+        if 0 <= pct <= 100: out["pct"] = pct
+    if not out: return None
+    m = _RATE_RE.search(line)
+    if m:
+        out["rate_bps"] = int(float(m.group(1)) * _UNITS[m.group(2).upper()])
+    m = _ETA_RE.search(line)
+    if m: out["eta"] = m.group(1)
+    return out
+
+
+def _stream_segments(stream, chunk_size=256):
+    """Yield output segments, splitting on CR as well as LF."""
+    buf = ""
+    while True:
+        chunk = stream.read(chunk_size)
+        if not chunk:
+            break
+        buf += chunk
+        parts = re.split(r"[\r\n]", buf)
+        buf = parts.pop()
+        for p in parts:
+            if p.strip(): yield p
+    if buf.strip(): yield buf
+
+
+def _run_job(key, args):
+    """Stream an `lms` subprocess into the job map."""
+    try:
+        proc = subprocess.Popen([LMS_BIN, *args], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except FileNotFoundError:
+        _update_job(key, error=f"lms CLI not found at {LMS_BIN}", done=True,
+                    finished=time.time())
+        return
+    _update_job(key, status="running")
+    for seg in _stream_segments(proc.stdout):
+        prog = parse_progress(seg)
+        if prog:
+            _update_job(key, **prog)
+        else:
+            cleaned = clean_line(seg)
+            if cleaned: _update_job(key, last_line=cleaned[:200])
+    code = proc.wait()
+    _update_job(key, done=True, finished=time.time(), status="finished",
+                error=None if code == 0 else f"lms exited {code}")
+
+
+# Load / unload -------------------------------------------------------------
+
+def build_load_args(model_key, context=None, gpu=None, ttl=None,
+                    parallel=None, identifier=None, estimate=False):
+    args = ["load", "-y", model_key]
+    for flag, val in (("-c", context), ("--gpu", gpu), ("--ttl", ttl),
+                      ("--parallel", parallel), ("--identifier", identifier)):
+        if val is not None and val != "":
+            args += [flag, str(val)]
+    if estimate: args.append("--estimate-only")
+    return args
+
+
+def start_load(model_key, **opts):
+    if not _claim_job(model_key, "load"): return False
+    args = build_load_args(model_key, **opts)
+    threading.Thread(target=_run_job, args=(model_key, args), daemon=True).start()
+    return True
+
+
+def estimate_load(model_key, **opts):
+    args = build_load_args(model_key, estimate=True, **opts)
+    try:
+        # `lms load --estimate-only` writes the whole estimate to stderr.
+        out = lmstudio.run_lms(*args, timeout=30, merge_stderr=True).strip()
+    except lmstudio.LmsError as e:
+        return {"ok": False, "error": str(e)}
+    if not out:
+        return {"ok": False, "error": "lms returned no estimate"}
+    return {"ok": True, "output": out}
+
+
+def unload_model(identifier):
+    lmstudio.run_lms("unload", identifier, timeout=30)
+
+
+def unload_all():
+    lmstudio.run_lms("unload", "--all", timeout=30)
+
+
+# Download ------------------------------------------------------------------
+
+def start_download(name):
+    if not _claim_job(name, "download"): return False
+    threading.Thread(target=_run_job, args=(name, ["get", "-y", name]),
+                     daemon=True).start()
+    return True
+
+
 # Benchmark scenarios ------------------------------------------------------
 
 # The needle and question are the canonical needle-in-haystack test answer,

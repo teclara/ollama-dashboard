@@ -21,10 +21,18 @@ class LmsError(Exception):
     """The `lms` CLI is missing, failed, or returned something unparseable."""
 
 
-def run_lms(*args, timeout=5):
+def run_lms(*args, timeout=5, merge_stderr=False):
+    """Run `lms` and return stdout.
+
+    `lms` writes some human-facing output to stderr rather than stdout —
+    `load --estimate-only` is entirely on stderr — so callers that need that
+    text pass merge_stderr=True. JSON-producing subcommands write to stdout
+    and must NOT merge, or stray diagnostics would corrupt the payload.
+    """
     try:
         return subprocess.check_output(
-            [LMS_BIN, *args], text=True, timeout=timeout, stderr=subprocess.DEVNULL)
+            [LMS_BIN, *args], text=True, timeout=timeout,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL)
     except FileNotFoundError:
         raise LmsError(f"lms CLI not found at {LMS_BIN}")
     except subprocess.TimeoutExpired:
