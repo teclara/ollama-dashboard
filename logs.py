@@ -5,7 +5,7 @@ HTTP status, no latency, and no client IP anywhere in them. So there are no
 percentile, error-rate, or per-client aggregates here — that data does not exist.
 What the logs do give is request paths and per-model inference events.
 """
-import glob, os, re, time
+import glob, json, os, re, time
 from collections import defaultdict
 from datetime import datetime
 
@@ -41,7 +41,9 @@ def _epoch(ts):
 
 def _row(ts, kind, **kw):
     r = {"ts": ts, "epoch": _epoch(ts), "kind": kind,
-         "method": None, "path": None, "model": None, "messages": None}
+         "method": None, "path": None, "model": None, "messages": None,
+         "prompt_tokens": None, "completion_tokens": None,
+         "total_tokens": None}
     r.update(kw)
     return r
 
@@ -68,11 +70,34 @@ def parse_line(line):
 
 def parse_lines(lines):
     out = []
+    pending_request = None
+    pending_prediction = None
     for line in lines:
-        r = parse_line(line.rstrip("\n"))
+        line = line.rstrip("\n")
+        r = parse_line(line)
+        if r is None and not line.startswith("["):
+            # Request and prediction payloads are pretty-printed JSON blocks.
+            # Capture only the small metadata fields needed by the dashboard;
+            # never retain prompts, generated content, or tool arguments.
+            model = re.match(r'^\s*"model"\s*:\s*("(?:\\.|[^"\\])*")', line)
+            if pending_request is not None and model:
+                try: pending_request["model"] = json.loads(model.group(1))
+                except Exception: pass
+            token = re.match(
+                r'^\s*"(prompt_tokens|completion_tokens|total_tokens)"\s*:\s*(\d+)',
+                line,
+            )
+            if pending_prediction is not None and token:
+                pending_prediction[token.group(1)] = int(token.group(2))
+            continue
+        if line.startswith("["):
+            pending_request = None
+            pending_prediction = None
         if r is None: continue
         if r["kind"] == "request" and r["path"] in NOISE_PATHS: continue
         out.append(r)
+        if r["kind"] == "request": pending_request = r
+        elif r["kind"] == "prediction": pending_prediction = r
     return out
 
 

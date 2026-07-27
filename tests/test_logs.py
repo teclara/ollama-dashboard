@@ -77,6 +77,26 @@ class TestParseLines(unittest.TestCase):
         ])
         self.assertEqual([r["path"] for r in rows], ["/v1/chat/completions"])
 
+    def test_captures_request_model_and_prediction_usage(self):
+        rows = logs.parse_lines([
+            '[2026-07-25 22:01:27][DEBUG] Received request: POST to /v1/chat/completions with body {',
+            '  "model": "qwen/qwen3.6-35b-a3b",',
+            '  "messages": [{"role": "user", "content": "not retained"}]',
+            '}',
+            '[2026-07-25 22:01:28][INFO][qwen/qwen3.6-35b-a3b] Generated prediction: {',
+            '  "model": "qwen/qwen3.6-35b-a3b",',
+            '  "usage": {',
+            '    "prompt_tokens": 328,',
+            '    "completion_tokens": 187,',
+            '    "total_tokens": 515',
+            '  }',
+            '}',
+        ])
+        self.assertEqual(rows[0]["model"], "qwen/qwen3.6-35b-a3b")
+        self.assertEqual(rows[1]["prompt_tokens"], 328)
+        self.assertEqual(rows[1]["completion_tokens"], 187)
+        self.assertEqual(rows[1]["total_tokens"], 515)
+
 
 class TestLogFiles(unittest.TestCase):
     def test_newest_first_across_month_dirs(self):
