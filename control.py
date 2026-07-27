@@ -355,3 +355,109 @@ def run_scenario(model, scenario, custom_prompt=None):
     except Exception as e:
         return {"ok": False, "error": str(e), "wall_seconds": round(time.time() - t0, 1)}
     return map_chat_response(resp, scenario, model, round(time.time() - t0, 1))
+
+
+# Delete --------------------------------------------------------------------
+#
+# LM Studio has no delete API and `lms` has no remove command, so this removes
+# files directly. Paths come from LM Studio's own model index, never from the
+# `path` field of `lms ls` — that field is a real relative path for directly
+# downloaded models but a *virtual identifier* for catalog models, where the
+# weights live somewhere else entirely.
+
+def is_inside(root, path):
+    """True if `path` resolves strictly inside `root`. Symlink-aware."""
+    try:
+        root_r = os.path.realpath(root)
+        path_r = os.path.realpath(path)
+    except Exception:
+        return False
+    return path_r.startswith(root_r + os.sep) and path_r != root_r
+
+
+def _index_entries(index):
+    models = (index or {}).get("models")
+    return models if isinstance(models, list) else []
+
+
+def resolve_delete_targets(index, indexed_id, models_root, hub_root):
+    """Indexed model id -> the directories to remove.
+
+    Takes an `indexedModelIdentifier`, NOT a model key. Those coincide for
+    catalog models but not for directly downloaded ones, where the index is
+    keyed by the full `<publisher>/<repo>/<file>.gguf` path.
+
+    `user` models resolve to their own directory. `hub` models are virtual
+    pointers: their weights live in a separate `user` entry, found via the
+    `<id>@<concrete-path>` index entry. Both the weights and the stub go.
+    `bundled` models ship with LM Studio and are never deletable.
+    """
+    entries = _index_entries(index)
+    by_id = {e.get("indexedModelIdentifier"): e for e in entries if isinstance(e, dict)}
+
+    entry = by_id.get(indexed_id)
+    if entry is None:
+        return {"ok": False, "error": f"model {indexed_id} not found in the model index"}
+
+    kind = entry.get("sourceDirectoryType")
+    if kind == "bundled":
+        return {"ok": False, "error": f"{indexed_id} is a bundled model and cannot be deleted"}
+
+    targets = []
+    if kind == "hub":
+        # Find the "<id>@<concrete>" entry that names the real weights.
+        prefix = indexed_id + "@"
+        concrete_key = next((k[len(prefix):] for k in by_id if k.startswith(prefix)), None)
+        concrete = by_id.get(concrete_key) if concrete_key else None
+        if not concrete or not concrete.get("containingDirAbsolutePath"):
+            return {"ok": False,
+                    "error": f"could not resolve virtual model {indexed_id} to concrete weights"}
+        targets.append(concrete["containingDirAbsolutePath"])
+        if entry.get("containingDirAbsolutePath"):
+            targets.append(entry["containingDirAbsolutePath"])
+    elif kind == "user":
+        if not entry.get("containingDirAbsolutePath"):
+            return {"ok": False, "error": f"no directory recorded for {indexed_id}"}
+        targets.append(entry["containingDirAbsolutePath"])
+    else:
+        return {"ok": False, "error": f"unknown storage type {kind!r} for {indexed_id}"}
+
+    for t in targets:
+        if not (is_inside(models_root, t) or is_inside(hub_root, t)):
+            return {"ok": False,
+                    "error": f"refusing to delete {t}: outside the permitted model roots"}
+
+    return {"ok": True, "targets": sorted(set(targets))}
+
+
+def delete_model(model_key, confirm):
+    """Delete a model's files. `confirm` must equal `model_key` exactly."""
+    if not confirm or confirm != model_key:
+        return {"ok": False, "error": "confirmation must match the model key exactly"}
+
+    import sources  # local import: sources imports control-free modules only
+    loaded_now = lmstudio.loaded_models()
+    loaded = {m["identifier"] for m in loaded_now} | {m["model_key"] for m in loaded_now}
+    if model_key in loaded:
+        return {"ok": False, "error": f"{model_key} is loaded — unload it first"}
+
+    # The index is keyed by indexedModelIdentifier, which is not the model key
+    # for directly downloaded models. Translate before resolving.
+    indexed_id = next((m["indexed_id"] for m in lmstudio.library()
+                       if m["model_key"] == model_key), None)
+    if not indexed_id:
+        return {"ok": False, "error": f"unknown model {model_key}"}
+
+    cfg = sources.settings()
+    resolved = resolve_delete_targets(
+        lmstudio.model_index(), indexed_id, sources.models_root(cfg), HUB_MODELS_DIR)
+    if not resolved["ok"]: return resolved
+
+    removed = []
+    for t in resolved["targets"]:
+        try:
+            shutil.rmtree(t)
+            removed.append(t)
+        except Exception as e:
+            return {"ok": False, "error": f"failed removing {t}: {e}", "removed": removed}
+    return {"ok": True, "removed": removed}
