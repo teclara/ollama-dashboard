@@ -17,6 +17,19 @@ Defaults to `http://127.0.0.1:11435` and expects LM Studio on `http://localhost:
 
 LM Studio's server must be running (`lms server start`, or the desktop app's server toggle). The `lms` CLI is used for model operations; it ships at `~/.lmstudio/bin/lms` and does not need to be on your `PATH`.
 
+## How it refreshes
+
+The dashboard polls two endpoints:
+
+- **`/api/live`** — GPU, host CPU/RAM, and PCIe throughput. About 1 KB, polled 10×/second.
+- **`/api/state`** — everything else: model lists, request panels, service info, settings. Polled every 2 seconds.
+
+Neither endpoint does any work on the request path. Every source is sampled by a background thread on its own cadence and served from memory, so both respond in well under a millisecond. GPU samples come from a single long-lived `nvidia-smi --loop-ms` process rather than one spawn per request.
+
+This matters because shelling out per request made fast refresh impossible: each `lms` invocation costs roughly 200 ms of Node startup, and a single aggregate call spent ~840 ms of its ~935 ms in subprocess spawns — capping the whole dashboard at about 1.4 Hz regardless of the browser's poll interval. Sampling in the background also stops the dashboard from flooding LM Studio's own logs with the polling traffic it is trying to report on.
+
+Sustained 10 Hz polling costs about 2.6% of one core. The live loop pauses while the browser tab is hidden.
+
 ## What the request panel does and doesn't show
 
 Requests are read from LM Studio's own server logs under `~/.lmstudio/server-logs/`. Those logs record the timestamp, HTTP method, and path of each request, plus per-model inference events — completions started, predictions generated, tool calls emitted, streams finished.
@@ -103,6 +116,12 @@ All settings are environment variables with sensible defaults:
 | `LMSTUDIO_LOG_WINDOW_LINES` | `600` | Max parsed *events* retained (not raw lines) |
 | `LMSTUDIO_LOG_TAIL_BYTES` | `4194304` | How much of each log file's tail to read per poll |
 | `LMSTUDIO_STATS_WINDOW_SEC` | `300` | Stats aggregation window |
+| `LMSTUDIO_GPU_SAMPLE_MS` | `100` | GPU stream cadence (`nvidia-smi --loop-ms`) |
+| `LMSTUDIO_HOST_SAMPLE_MS` | `100` | Host CPU/RAM sampling |
+| `LMSTUDIO_LOGS_SAMPLE_SEC` | `1` | Server-log re-read cadence |
+| `LMSTUDIO_LOADED_SAMPLE_SEC` | `2` | `lms ps` cadence |
+| `LMSTUDIO_SLOW_SAMPLE_SEC` | `15` | `lms ls`, engine, disk, service, tailscale |
+| `LMSTUDIO_HISTORY_INTERVAL_SEC` | `1` | Sparkline sample spacing, throttled apart from the GPU sample rate |
 
 `LMSTUDIO_LOG_TAIL_BYTES` exists because LM Studio logs full request bodies at DEBUG level, so raw log lines vastly outnumber actual events — a few hundred lines can span only a few seconds. The dashboard reads log tails by byte count and stops once the parsed events actually reach back past the stats window. Raise it only if your window looks truncated under heavy traffic.
 
@@ -175,6 +194,7 @@ The suite runs against captured fixtures in `tests/fixtures/` and needs no runni
 config.py          environment-driven settings
 lmstudio.py        the lms CLI, the /api/v0 API, and payload normalization
 logs.py            server-log discovery, parsing, and aggregation
+samplers.py        background sampling; keeps the request path free of subprocesses
 sources.py         read-only state (gpu, host, disk, service, tailscale)
 control.py         load, unload, download, delete, scenarios, catalog scrape
 server.py          HTTP routing + main

@@ -3,6 +3,7 @@
 import http.server, json, os, socketserver
 
 import config
+import samplers
 import sources
 import control
 
@@ -52,6 +53,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, "text/html; charset=utf-8", CONTROL_HTML)
         if self.path == "/api/state":
             return self._json(200, sources.state())
+        # Small fast-moving slice, safe to poll many times a second.
+        if self.path == "/api/live":
+            return self._json(200, sources.live())
         if self.path == "/api/control/jobs":
             return self._json(200, control.get_jobs())
         if self.path.startswith("/api/control/catalog"):
@@ -114,6 +118,7 @@ class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 if __name__ == "__main__":
     sources.start_pcie_monitor()
+    samplers.start_all()
     with ThreadedServer((config.HOST, config.PORT), Handler) as s:
         print(f"lmstudio dashboard on http://{config.HOST}:{config.PORT}")
         s.serve_forever()

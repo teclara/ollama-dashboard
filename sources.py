@@ -6,8 +6,8 @@ from datetime import datetime
 import logs
 import lmstudio
 from config import (
-    GPU_HISTORY_LEN, LMS_BIN, MODELS_DIR_FALLBACK, PCIE_HISTORY_LEN,
-    SETTINGS_PATH, SYSTEMD_UNIT, SYSTEMD_USER,
+    GPU_HISTORY_LEN, HISTORY_INTERVAL_SEC, LMS_BIN, MODELS_DIR_FALLBACK,
+    PCIE_HISTORY_LEN, SETTINGS_PATH, SYSTEMD_UNIT, SYSTEMD_USER,
 )
 
 START = time.time()
@@ -31,25 +31,39 @@ def _decode_throttle(hex_str):
     return [name for mask, name in _THROTTLE_BITS if bits & mask and name != "gpu_idle"]
 
 
+GPU_QUERY_FIELDS = (
+    "name,memory.used,memory.total,utilization.gpu,temperature.gpu,"
+    "temperature.memory,fan.speed,power.draw,power.limit,"
+    "pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,"
+    "pcie.link.width.max,clocks_event_reasons.active"
+)
+
+
+def parse_gpu_csv(line):
+    """One `--query-gpu` CSV row -> the GPU dict. Shared by the one-shot call
+    and the streaming sampler, so both produce an identical shape."""
+    n, mu, mt, u, t, tm, fan, p, pl, lg, lgm, lw, lwm, throttle = [
+        x.strip() for x in line.split(",")]
+
+    def _maybe_int(s):
+        try: return int(s)
+        except ValueError: return None  # [N/A]
+
+    return {"name": n, "mem_used": int(mu), "mem_total": int(mt), "util": int(u), "temp": int(t),
+            "temp_mem": _maybe_int(tm),
+            "fan": _maybe_int(fan),
+            "power": float(p), "power_limit": float(pl),
+            "pcie_gen": int(lg), "pcie_gen_max": int(lgm),
+            "pcie_width": int(lw), "pcie_width_max": int(lwm),
+            "throttle_reasons": _decode_throttle(throttle)}
+
+
 def gpu():
     try:
         out = subprocess.check_output(
-            ["nvidia-smi",
-             "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,temperature.memory,fan.speed,power.draw,power.limit,pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,clocks_event_reasons.active",
+            ["nvidia-smi", f"--query-gpu={GPU_QUERY_FIELDS}",
              "--format=csv,noheader,nounits"], text=True, timeout=2).strip()
-        n, mu, mt, u, t, tm, fan, p, pl, lg, lgm, lw, lwm, throttle = [x.strip() for x in out.split(",")]
-
-        def _maybe_int(s):
-            try: return int(s)
-            except ValueError: return None  # [N/A]
-
-        return {"name": n, "mem_used": int(mu), "mem_total": int(mt), "util": int(u), "temp": int(t),
-                "temp_mem": _maybe_int(tm),
-                "fan": _maybe_int(fan),
-                "power": float(p), "power_limit": float(pl),
-                "pcie_gen": int(lg), "pcie_gen_max": int(lgm),
-                "pcie_width": int(lw), "pcie_width_max": int(lwm),
-                "throttle_reasons": _decode_throttle(throttle)}
+        return parse_gpu_csv(out)
     except Exception as e:
         return {"error": str(e)}
 
@@ -193,15 +207,28 @@ _HIST = deque(maxlen=GPU_HISTORY_LEN)
 _HIST_LOCK = threading.Lock()
 
 
-def push_history(g):
-    if "error" in g: return
+_LAST_HIST_PUSH = [0.0]
+
+
+def push_history(g, now=None, min_interval=None):
+    """Append a sparkline sample, throttled independently of the sample rate.
+
+    GPU samples arrive ~10x/second; without throttling a 60-slot buffer would
+    cover six seconds instead of a minute.
+    """
+    if "error" in g: return False
+    now = time.time() if now is None else now
+    interval = HISTORY_INTERVAL_SEC if min_interval is None else min_interval
     with _HIST_LOCK:
+        if now - _LAST_HIST_PUSH[0] < interval: return False
+        _LAST_HIST_PUSH[0] = now
         _HIST.append({
-            "t": int(time.time()),
+            "t": int(now),
             "vram_pct": round(g["mem_used"] / g["mem_total"] * 100, 1),
             "util": g["util"],
             "temp": g["temp"],
         })
+        return True
 
 
 def get_history():
@@ -294,30 +321,42 @@ def pcie():
         return {"latest": dict(_PCIE_LATEST), "history": list(_PCIE_HIST)}
 
 
-def state():
-    g = gpu()
-    push_history(g)
-    rows = logs.read_window()
-    cfg = settings()
-    loaded = lmstudio.loaded_models()
+def live():
+    """The small, fast-moving slice: everything that visibly moves.
+
+    Served entirely from the sampler cache, so this is safe to poll many times
+    a second. Kept deliberately small — shipping the model lists at that rate
+    would be pure waste, since they change on the order of minutes.
+    """
+    import samplers
     return {
         "now": datetime.now().isoformat(timespec="seconds"),
         "dash_uptime_s": int(time.time() - START),
-        "gpu": g,
-        "gpu_processes": gpu_processes(),
-        "gpu_versions": nvidia_versions(),
+        "gpu": samplers.GPU.get(),
         "gpu_history": get_history(),
-        "loaded": loaded,
-        "library": lmstudio.library(loaded),
+        "pcie": pcie(),
+        "host": samplers.HOST.get(),
+    }
+
+
+def state():
+    """The full payload. Also served from the sampler cache."""
+    import samplers
+    rows = samplers.LOGS.get()
+    cfg = samplers.SETTINGS.get()
+    return {
+        **live(),
+        "gpu_processes": samplers.GPU_PROCS.get(),
+        "gpu_versions": nvidia_versions(),
+        "loaded": samplers.LOADED.get(),
+        "library": samplers.LIBRARY.get(),
         "requests": rows[-30:][::-1],
         "stats_5m": logs.stats(rows),
         "top_endpoints": logs.top_endpoints(rows),
         "model_activity": logs.model_activity(rows),
-        "disk": disk(models_root(cfg)),
-        "service": service_info(),
-        "tailscale": tailscale(),
-        "pcie": pcie(),
-        "host": host(),
+        "disk": samplers.DISK.get(),
+        "service": samplers.SERVICE.get(),
+        "tailscale": samplers.TAILSCALE.get(),
         "settings": cfg,
         "lms_ok": os.access(LMS_BIN, os.X_OK),
     }

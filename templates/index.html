@@ -43,7 +43,7 @@
 <div class="card"><h2>Loaded Models</h2><div id="loaded"></div></div>
 
 <div class="grid-2">
-  <div class="card"><h2>GPU</h2><div id="gpu"></div><div id="spark"></div></div>
+  <div class="card"><h2>GPU</h2><div id="gpu"></div><div id="spark"></div><div id="gpuprocs"></div></div>
   <div class="card"><h2>PCIe / Oculink</h2><div id="pcie"></div></div>
 </div>
 
@@ -63,6 +63,11 @@
 <div class="meta">last update <span id="now">—</span> · dashboard up <span id="dashup">—</span></div>
 
 <script>
+// Refresh cadences. The live payload is small and served from memory, so it
+// can run an order of magnitude faster than the full state.
+const LIVE_MS = 100;
+const STATE_MS = 2000;
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 const fmt = (n,d=1) => Number(n).toFixed(d);
 const el = id => document.getElementById(id);
@@ -185,10 +190,16 @@ function pcieSparkline(history, capMbs){
   return wrap;
 }
 
-async function tick(){
-  try{
-    const r = await fetch('/api/state'); const s = await r.json();
+// The dashboard runs two loops. /api/live is a small, sampler-backed payload
+// carrying only what visibly moves (GPU, host, PCIe) and is polled many times a
+// second; /api/state carries the model lists and request panels, which change
+// on the order of seconds to minutes. Both are served from memory, so neither
+// costs the server a subprocess.
 
+// gpu_versions arrives on the slow payload but is rendered by the fast one.
+let GPU_VERSIONS = {};
+
+function renderLive(s){
     // GPU
     const g = s.gpu;
     if(g.error){ replace(el('gpu'), ce('div', {cls:'empty', text:g.error})); }
@@ -198,7 +209,7 @@ async function tick(){
       const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
       const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:#fcd34d`})]);
       const tempText = g.temp_mem == null ? `${g.temp}°C` : `${g.temp}°C (mem ${g.temp_mem}°C)`;
-      const ver = s.gpu_versions || {};
+      const ver = GPU_VERSIONS || {};
       const driverText = (ver.driver || ver.cuda)
         ? `driver ${ver.driver || '—'} · cuda ${ver.cuda || '—'}`
         : null;
@@ -223,16 +234,6 @@ async function tick(){
       replace(el('gpu'), rows);
     }
     replace(el('spark'), sparkline(s.gpu_history || []));
-
-    // GPU processes
-    const procs = s.gpu_processes || [];
-    if(procs.length){
-      const procWrap = ce('div', {style:'margin-top:12px;padding-top:10px;border-top:1px solid var(--border)'});
-      procWrap.appendChild(ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:`processes (${procs.length})`}));
-      const ptable = table(['pid','process','vram'], procs.map(p => row([p.pid, {cls:'path', text:p.name}, fmtBytes(p.vram_mb*1024*1024)])));
-      procWrap.appendChild(ptable);
-      el('spark').appendChild(procWrap);
-    }
 
     // PCIe
     const pc = s.pcie || {};
@@ -265,6 +266,25 @@ async function tick(){
       statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
       memBar,
     ]);
+
+    el('now').textContent = s.now;
+    el('dashup').textContent = fmtUptime(s.dash_uptime_s);
+}
+
+function renderState(s){
+    GPU_VERSIONS = s.gpu_versions || {};
+
+    // GPU processes — its own container, so the 100ms live loop redrawing the
+    // sparkline cannot wipe it between slow ticks.
+    const procs = s.gpu_processes || [];
+    if(procs.length){
+      const procWrap = ce('div', {style:'margin-top:12px;padding-top:10px;border-top:1px solid var(--border)'});
+      procWrap.appendChild(ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:`processes (${procs.length})`}));
+      const ptable = table(['pid','process','vram'], procs.map(p => row([p.pid, {cls:'path', text:p.name}, fmtBytes(p.vram_mb*1024*1024)])));
+      procWrap.appendChild(ptable);
+      replace(el('gpuprocs'), procWrap);
+    } else { replace(el('gpuprocs'), null); }
+
     // lms CLI banner — a missing CLI empties four panels at once
     if(s.lms_ok === false){
       replace(el('banner'), ce('div', {cls:'card', style:'border-color:#fca5a5;color:#fca5a5',
@@ -418,13 +438,31 @@ async function tick(){
       ]);
     });
     replace(el('lib'), table(['model','arch','params','quant','size','max ctx','',''], libRows));
-
-    el('now').textContent = s.now;
-    el('dashup').textContent = fmtUptime(s.dash_uptime_s);
-  } catch(e){
-    el('now').textContent = 'error: ' + e.message;
-  }
 }
-tick(); setInterval(tick, 2000);
+
+// Each loop reschedules itself only after its own request settles, so a slow
+// or stalled response can never pile up overlapping fetches.
+function loop(url, render, intervalMs){
+  let stopped = false;
+  async function run(){
+    try{
+      const r = await fetch(url);
+      render(await r.json());
+    } catch(e){
+      el('now').textContent = 'error: ' + e.message;
+    }
+    if(!stopped) setTimeout(run, intervalMs);
+  }
+  run();
+  // Pause while the tab is hidden — no point polling 10x/second into a
+  // background tab.
+  document.addEventListener('visibilitychange', () => {
+    if(document.hidden){ stopped = true; }
+    else if(stopped){ stopped = false; run(); }
+  });
+}
+
+loop('/api/live',  renderLive,  LIVE_MS);
+loop('/api/state', renderState, STATE_MS);
 </script>
 </body></html>

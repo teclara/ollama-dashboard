@@ -58,5 +58,21 @@ LOG_WINDOW_LINES = _env("LMSTUDIO_LOG_WINDOW_LINES", 600, int)
 LOG_TAIL_BYTES = _env("LMSTUDIO_LOG_TAIL_BYTES", 4 << 20, int)
 STATS_WINDOW_SEC = _env("LMSTUDIO_STATS_WINDOW_SEC", 300, int)
 
+# Background sampling cadences.
+#
+# The request path never shells out. Every `lms` invocation costs ~200ms of
+# Node startup, so serving them per request capped the dashboard at roughly
+# 1.4 Hz. Each source is sampled by a background thread instead and served
+# from memory, which is also what keeps the dashboard from flooding LM
+# Studio's own logs with the polling traffic it is trying to report on.
+GPU_SAMPLE_MS = _env("LMSTUDIO_GPU_SAMPLE_MS", 100, int)     # streamed, ~free
+HOST_SAMPLE_MS = _env("LMSTUDIO_HOST_SAMPLE_MS", 100, int)   # /proc reads
+LOGS_SAMPLE_SEC = _env("LMSTUDIO_LOGS_SAMPLE_SEC", 1, int)
+LOADED_SAMPLE_SEC = _env("LMSTUDIO_LOADED_SAMPLE_SEC", 2, int)   # lms ps
+SLOW_SAMPLE_SEC = _env("LMSTUDIO_SLOW_SAMPLE_SEC", 15, int)      # lms ls, engine, disk…
+# Sparkline history is throttled separately from the sample rate, or a 60-slot
+# buffer at 100ms would cover only six seconds.
+HISTORY_INTERVAL_SEC = _env("LMSTUDIO_HISTORY_INTERVAL_SEC", 1, int)
+
 # Paths excluded from request stats (they're polled by the dashboard itself).
 NOISE_PATHS = {"/api/v0/models", "/v1/models", "/lmstudio-greeting"}
