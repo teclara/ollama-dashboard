@@ -15,6 +15,11 @@
   .stat:last-child{border:0}
   .stat .k{color:var(--dim)}
   .stat .v{font-variant-numeric:tabular-nums}
+  /* Throttling recolours the affected value in place. Nothing is inserted or
+     removed, so the card never changes height and the page never shifts.
+     No transition here: this card is rebuilt on every refresh, so a CSS
+     transition would never get the chance to run. */
+  .stat .v.bad{color:var(--bad)}
   .bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin:8px 0}
   .bar>div{height:100%;background:var(--accent);transition:width .3s}
   table{width:100%;border-collapse:collapse;font-size:12px}
@@ -122,8 +127,26 @@ function replace(target, child){
   if(Array.isArray(child)) child.forEach(c => target.appendChild(c));
   else if(child) target.appendChild(child);
 }
-function statRow(k, v){
-  return ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:k}), ce('span',{cls:'v',text:v==null?'—':String(v)})]);
+function statRow(k, v, bad){
+  const val = ce('span', {cls: bad ? 'v bad' : 'v', text: v==null?'—':String(v)});
+  return ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:k}), val]);
+}
+
+// Throttle flags flip on and off between consecutive samples, so at a 100ms
+// refresh a raw read would strobe. Latch each reason for THROTTLE_HOLD_MS past
+// its last sighting so the indicator reads as steady-on rather than flickering.
+const THROTTLE_HOLD_MS = 2000;
+const _throttleSeen = new Map();
+
+function holdThrottle(reasons){
+  const now = Date.now();
+  for(const r of reasons) _throttleSeen.set(r, now);
+  const active = [];
+  for(const [r, t] of _throttleSeen){
+    if(now - t <= THROTTLE_HOLD_MS) active.push(r);
+    else _throttleSeen.delete(r);
+  }
+  return active;
 }
 
 function sparkline(history){
@@ -213,6 +236,26 @@ function renderLive(s){
       const driverText = (ver.driver || ver.cuda)
         ? `driver ${ver.driver || '—'} · cuda ${ver.cuda || '—'}`
         : null;
+      // Throttling is shown by colouring the value it applies to, never by
+      // inserting a row — an appearing/disappearing row shoves the whole page
+      // down. holdThrottle also latches the state briefly, because the power
+      // cap flickers on and off between samples and at 10Hz a raw read would
+      // strobe the colour several times a second.
+      const active = holdThrottle(g.throttle_reasons || []);
+      const powerThrottled = active.some(r => r === 'sw_power_cap' || r === 'hw_power_brake');
+      const tempThrottled = active.some(r => r.includes('thermal'));
+      // Anything that maps to neither power nor temperature still needs a home,
+      // so it rides along on the utilization row rather than vanishing.
+      const otherThrottled = active.filter(
+        r => !r.includes('thermal') && r !== 'sw_power_cap' && r !== 'hw_power_brake');
+
+      // Reasons are appended to the value text, not shown on hover: this card
+      // is rebuilt every 100ms, so a native title tooltip would be destroyed
+      // before the browser's hover delay ever elapsed.
+      const powerText = g.power_limit
+        ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)`
+        : `${fmt(g.power)} W`;
+
       const rows = [
         statRow('device', g.name),
       ];
@@ -220,17 +263,14 @@ function renderLive(s){
       rows.push(
         statRow('vram', `${g.mem_used}/${g.mem_total} MB (${fmt(pct)}%)`),
         vbar,
-        statRow('utilization', g.util+'%'),
-        statRow('temperature', tempText),
+        statRow('utilization', g.util + '%' + (otherThrottled.length ? ' · ' + otherThrottled.join(', ') : ''),
+                otherThrottled.length > 0),
+        statRow('temperature', tempText + (tempThrottled ? ' · thermal throttle' : ''), tempThrottled),
         statRow('fan', g.fan == null ? '—' : g.fan+'%'),
-        statRow('power', g.power_limit ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)` : `${fmt(g.power)} W`),
+        statRow('power', powerText + (powerThrottled ? ' · power capped' : ''), powerThrottled),
         pbar,
       );
-      const tr = g.throttle_reasons || [];
-      if(tr.length){
-        const pills = ce('span', {cls:'v'}, tr.map(r => ce('span', {cls:'pill warn', style:'margin-left:4px', text:r})));
-        rows.push(ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:'throttling'}), pills]));
-      }
+      if(powerThrottled) pbar.firstChild.style.background = 'var(--bad)';
       replace(el('gpu'), rows);
     }
     replace(el('spark'), sparkline(s.gpu_history || []));
