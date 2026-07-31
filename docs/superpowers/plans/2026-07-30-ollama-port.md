@@ -1823,19 +1823,24 @@ def state():
         "service": samplers.SERVICE.get(),
         "tailscale": samplers.TAILSCALE.get(),
         "settings": samplers.SETTINGS.get(),
-        "ollama_ok": ollama.ping(),
+        # Sampled, never called live — state() must not touch Ollama.
+        "ollama_ok": samplers.PING.get(),
     }
 ```
 
 `live()` is unchanged. Delete `model_activity` from the payload — it is replaced by `attribute` plus `top_endpoints`.
 
-**Note:** `ollama.ping()` in `state()` is a live call on the request path, which the global constraint forbids. Add a `PING` holder to `samplers.py` instead:
+`samplers.PING` does not exist yet. Add it to `samplers.py` beside the other
+holders, and add `(PING, LOADED_SAMPLE_SEC)` to the `schedule` list in
+`start_all()`:
 
 ```python
 PING = Sampled(ollama.ping, False)
 ```
 
-Add `(PING, LOADED_SAMPLE_SEC)` to the `schedule` list, and use `samplers.PING.get()` in `state()`.
+A bare `ollama.ping()` inside `state()` would be a live HTTP call on the
+request path, which the global constraints forbid — and it would log itself
+into the very request window the dashboard displays.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
