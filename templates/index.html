@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LM Studio Dashboard</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ollama Dashboard</title>
 <style>
   :root{color-scheme:dark;--bg:oklch(17% .012 255);--surface:oklch(21% .014 255);--surface-raised:oklch(24% .016 255);--border:oklch(31% .018 255);--border-strong:oklch(39% .02 255);--text:oklch(92% .01 255);--dim:oklch(69% .02 255);--muted:oklch(57% .02 255);--accent:oklch(78% .12 220);--accent2:oklch(76% .1 292);--good:oklch(78% .13 150);--warn:oklch(82% .13 85);--bad:oklch(75% .15 25);--radius:10px}
   *{box-sizing:border-box}
@@ -52,7 +52,9 @@
   #activity th:first-child,#activity td:first-child{width:42%}
   #activity th:not(:first-child),#activity td:not(:first-child){text-align:right}
   #activity td.path{overflow-wrap:anywhere;word-break:break-word}
-  #reqs th:nth-child(n+4):nth-child(-n+7),#reqs td:nth-child(n+4):nth-child(-n+7){text-align:right}
+  /* status + latency are numeric; client and model are identifiers. */
+  #reqs th:nth-child(4),#reqs td:nth-child(4),#reqs th:nth-child(5),#reqs td:nth-child(5){text-align:right}
+  #reqs td.path{overflow-wrap:anywhere;word-break:break-word}
   .pill{display:inline-block;padding:2px 7px;border-radius:999px;font:600 10px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;white-space:nowrap}
   .pill.good{background:oklch(30% .06 150);color:var(--good)}
   .pill.warn{background:oklch(31% .055 85);color:var(--warn)}
@@ -72,7 +74,7 @@
 <body>
 <div class="shell">
   <header class="masthead">
-    <div><p class="eyebrow">Local inference</p><h1>LM Studio Dashboard</h1><div class="subtitle">Live system health and model activity</div></div>
+    <div><p class="eyebrow">Local inference</p><h1>Ollama Dashboard</h1><div class="subtitle">Live system health and inference activity</div></div>
     <nav aria-label="Primary"><a href="/" class="active" aria-current="page">Dashboard</a><a href="/control">Control</a></nav>
   </header>
   <main>
@@ -96,7 +98,7 @@
       <div class="section-head"><div><h2 id="activity-title">Inference activity</h2><p>Rolling five-minute workload and request evidence.</p></div></div>
       <div class="grid-3">
         <div class="card"><h3>Summary <span class="context">5 min</span></h3><div id="stats"></div></div>
-        <div class="card table-region"><h3>Model activity <span class="context">5 min</span></h3><div id="activity"></div></div>
+        <div class="card table-region"><h3>Clients <span class="context">5 min</span></h3><div id="activity"></div></div>
         <div class="card table-region"><h3>Top endpoints <span class="context">5 min</span></h3><div id="endpoints"></div></div>
       </div>
       <div class="card table-region" style="margin-top:12px"><h3>Recent requests</h3><div id="reqs"></div></div>
@@ -118,6 +120,12 @@ const STATE_MS = 2000;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const fmt = (n,d=1) => Number(n).toFixed(d);
 const el = id => document.getElementById(id);
+// GIN latencies arrive in seconds and span microseconds to minutes.
+const fmtDur = s => s == null ? '—'
+  : s < 1e-3 ? (s*1e6).toFixed(0)+'\u00b5s'
+  : s < 1    ? (s*1e3).toFixed(1)+'ms'
+  : s < 60   ? s.toFixed(2)+'s'
+  : Math.floor(s/60)+'m'+Math.round(s%60)+'s';
 
 function ce(tag, opts={}, children=[]){
   const e = document.createElement(tag);
@@ -367,11 +375,20 @@ function renderState(s){
       replace(el('gpuprocs'), procWrap);
     } else { replace(el('gpuprocs'), null); }
 
-    // lms CLI banner — a missing CLI empties four panels at once
-    if(s.lms_ok === false){
-      replace(el('banner'), ce('div', {cls:'card', style:'border-color:#fca5a5;color:#fca5a5',
-        text:'LM Studio CLI not found — model panels will stay empty. Set LMSTUDIO_LMS_BIN.'}));
-    } else { replace(el('banner'), null); }
+    // Banners. Both exist so a broken input is never rendered as real data:
+    // an unreachable server empties the model panels, and a dead journal
+    // follower would otherwise present a frozen request window as current.
+    const warn = [];
+    if(s.ollama_ok === false){
+      warn.push('Ollama unreachable — model panels will stay empty. Check OLLAMA_URL and `systemctl status ollama`.');
+    }
+    if(s.log_age_s != null && s.log_age_s > 30){
+      warn.push(`Request log stale (${fmtDur(s.log_age_s)} since the last line) — the journal follower may have died.`);
+    }
+    replace(el('banner'), warn.length
+      ? ce('div',{cls:'card',style:'border-color:#fca5a5;color:#fca5a5'},
+           warn.map(t => ce('div',{text:t})))
+      : null);
 
     // Loaded
     if(!s.loaded.length){ replace(el('loaded'), ce('div', {cls:'empty', text:'no models loaded'})); }
@@ -379,45 +396,49 @@ function renderState(s){
       const rows = s.loaded.map(m => {
         const caps = ce('span', {}, [
           m.vision ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'vision'}) : null,
-          m.tools ? ce('span',{cls:'pill dim',text:'tools'}) : null,
+          m.tools ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'tools'}) : null,
+          m.thinking ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'thinking'}) : null,
+          m.embedding ? ce('span',{cls:'pill dim',text:'embed'}) : null,
         ]);
-        const stCls = m.status === 'generating' ? 'good' : 'dim';
-        const statusCell = ce('span', {}, [
-          ce('span',{cls:'pill '+stCls, text: m.status || '—'}),
-          m.queued ? ce('span',{cls:'pill warn',style:'margin-left:4px',text:m.queued+' queued'}) : null,
-        ]);
+        // size vs size_vram is the load-health signal Ollama gives and LM Studio
+        // did not: when they differ, layers spilled to the CPU. Colour is paired
+        // with text so the state is never carried by hue alone.
+        const placement = m.fully_gpu
+          ? ce('span',{cls:'pill good',text:'GPU'})
+          : ce('span',{cls:'pill warn',text:'CPU +'+fmtBytes(m.cpu_bytes)});
         const ctx = m.context
-          ? `${(m.context/1024).toFixed(0)}K / ${(m.max_context/1024).toFixed(0)}K`
+          ? (m.max_context
+              ? `${(m.context/1024).toFixed(0)}K / ${(m.max_context/1024).toFixed(0)}K`
+              : `${(m.context/1024).toFixed(0)}K`)
           : '—';
         return row([
-          m.identifier,
+          m.model_key,
           m.arch || '—',
           m.quant || '—',
           fmtBytes(m.size),
+          placement,
           ctx,
-          m.parallel == null ? '—' : String(m.parallel),
           m.ttl_s == null ? 'none' : fmtUptime(m.ttl_s),
-          statusCell,
           caps,
         ]);
       });
       replace(el('loaded'), table(
-        ['identifier','arch','quant','size','ctx / max','par','ttl','status',''], rows));
+        ['model','arch','quant','size','placement','ctx','ttl',''], rows));
     }
 
-    // Stats. LM Studio's logs carry no status, latency, or client IP, so there
-    // are no percentile, error-rate, or per-client figures to show here.
+    // Stats. Ollama's GIN access lines carry status, latency and client, none
+    // of which LM Studio's logs had — hence the percentiles and error rate.
     const st = s.stats_5m;
-    const act = s.model_activity || [];
-    const sum = k => act.reduce((n,a) => n + (a[k]||0), 0);
+    const errPill = st.error_count
+      ? ce('span',{cls:'pill bad',text:`${st.error_count} (${st.error_rate}%)`})
+      : ce('span',{cls:'pill good',text:'0'});
     replace(el('stats'), [
       statRow('requests', st.count),
       statRow('rps', st.rps),
-      statRow('completions', sum('completions')),
-      statRow('predictions', sum('predictions')),
-      statRow('tool calls', sum('tool_calls')),
-      ce('div', {cls:'meta', style:'text-align:left;margin-top:10px',
-                 text:'LM Studio logs carry no status, latency, or client IP.'}),
+      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'errors'}), ce('span',{cls:'v'},[errPill])]),
+      statRow('p50', fmtDur(st.p50_s)),
+      statRow('p95', fmtDur(st.p95_s)),
+      statRow('p99', fmtDur(st.p99_s)),
     ]);
 
     // Service
@@ -428,11 +449,19 @@ function renderState(s){
     const eng = sv.engine || {};
     const engText = eng.name ? `${eng.name} @ ${eng.version}` : '—';
     replace(el('service'), [
-      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'lmstudio-server'}), ce('span',{cls:'v'},[activePill])]),
+      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'ollama.service'}), ce('span',{cls:'v'},[activePill])]),
       statRow('engine', engText),
       statRow('uptime', fmtUptime(sv.uptime_s)),
       statRow('rss', sv.rss_kb ? fmtBytes(sv.rss_kb*1024) : '—'),
-      statRow('models size', fmtBytes(dk.models_size)),
+      // approximate means we could not read the store and are summing
+      // /api/tags instead, which counts only referenced blobs. Showing that
+      // as an exact figure would understate real usage without saying so.
+      statRow('models size', dk.models_size
+        ? (dk.approximate ? `≥ ${fmtBytes(dk.models_size)}` : fmtBytes(dk.models_size))
+        : '—'),
+      ...(dk.approximate ? [ce('div',{cls:'meta',style:'text-align:left',
+            text:'lower bound — no read access to the model store'})] : []),
+      ...(dk.orphan_bytes ? [statRow('reclaimable', fmtBytes(dk.orphan_bytes))] : []),
       statRow('disk free', dk.fs_total ? `${fmtBytes(dk.fs_free)} / ${fmtBytes(dk.fs_total)}` : '—'),
       statRow('dashboard up', fmtUptime(s.dash_uptime_s)),
     ]);
@@ -452,37 +481,53 @@ function renderState(s){
       ]);
     }
 
-    // Model activity — replaces the old top-clients panel, which had no data
-    // source once the GIN logs went away.
-    if(!act.length){ replace(el('activity'), ce('div',{cls:'empty',text:'no recent inference'})); }
+    // Clients — GIN access lines carry the caller's address, which LM Studio's
+    // logs never did.
+    const clients = s.by_client || [];
+    if(!clients.length){ replace(el('activity'), ce('div',{cls:'empty',text:'no recent clients'})); }
     else {
-      const rows = act.map(a => row([
-        {cls:'path', text:a.model}, a.completions, a.predictions, a.tool_calls, a.streams]));
-      replace(el('activity'), table(['model','completions','predictions','tool calls','streams'], rows));
+      const rows = clients.map(c => row([
+        {cls:'path', text:c.client},
+        c.count,
+        c.errors ? ce('span',{cls:'pill bad',text:String(c.errors)}) : '0',
+        fmtDur(Math.max(0, (Date.now()/1000) - c.last_seen)) + ' ago',
+      ]));
+      replace(el('activity'), table(['client','requests','errors','last seen'], rows));
     }
 
     // Top endpoints
     if(!s.top_endpoints.length){ replace(el('endpoints'), ce('div',{cls:'empty',text:'no recent activity'})); }
     else {
-      const rows = s.top_endpoints.map(e => row([{cls:'path',text:e.path}, e.count]));
-      replace(el('endpoints'), table(['path','count'], rows));
+      const rows = s.top_endpoints.map(e => row([
+        {cls:'path',text:e.path},
+        e.count,
+        e.errors ? ce('span',{cls:'pill bad',text:String(e.errors)}) : '0',
+        fmtDur(e.p95_s),
+      ]));
+      replace(el('endpoints'), table(['path','count','errors','p95'], rows));
     }
 
     // Recent requests
     if(!s.requests.length){ replace(el('reqs'), ce('div',{cls:'empty',text:'no recent requests'})); }
     else {
-      const rows = s.requests.map(r => row([
-        r.ts,
-        r.kind === 'request' ? r.method : ce('span',{cls:'pill dim',text:r.kind}),
-        {cls:'path', text:r.model || '—'},
-        r.messages,
-        r.prompt_tokens,
-        r.completion_tokens,
-        r.total_tokens,
-        {cls:'path', text: r.path || r.model || '—'},
-      ]));
+      const rows = s.requests.map(r => {
+        const st2 = r.status;
+        const pill = st2 == null ? '—'
+          : ce('span',{cls: st2 >= 400 ? 'pill bad' : 'pill good', text:String(st2)});
+        return row([
+          r.ts,
+          r.method || ce('span',{cls:'pill dim',text:r.kind}),
+          {cls:'path', text: r.path || '—'},
+          pill,
+          fmtDur(r.latency_s),
+          {cls:'path', text: r.client || '—'},
+          {cls:'path', text: r.model || '—'},
+        ]);
+      });
+      // "model (inferred)" is deliberate: GIN lines carry no model name, so
+      // this column comes from which model was resident at that timestamp.
       replace(el('reqs'), table(
-        ['time','event','model','messages','tokens in','tokens out','total','endpoint'], rows));
+        ['time','method','endpoint','status','latency','client','model (inferred)'], rows));
     }
 
     // Library
