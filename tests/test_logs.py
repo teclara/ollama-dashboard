@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import logs
@@ -149,6 +150,146 @@ class TestParseLines(unittest.TestCase):
                           and r["path"] in ("/api/ps", "/api/version")
                           and r["client"] in ("::1", "127.0.0.1")]
         self.assertEqual(loopback_polls, [])
+
+
+class TestPercentile(unittest.TestCase):
+    def test_median_of_odd_length(self):
+        self.assertAlmostEqual(logs.percentile([1, 2, 3], 50), 2.0)
+
+    def test_p95_picks_the_tail(self):
+        self.assertAlmostEqual(logs.percentile(list(range(1, 101)), 95), 95.0)
+
+    def test_single_value(self):
+        self.assertAlmostEqual(logs.percentile([7.5], 95), 7.5)
+
+    def test_empty_is_none(self):
+        self.assertIsNone(logs.percentile([], 50))
+
+    def test_ignores_none_entries(self):
+        # A request whose latency failed to parse must not be counted as 0.
+        self.assertAlmostEqual(logs.percentile([5, None, 5], 50), 5.0)
+        self.assertAlmostEqual(logs.percentile([None, None, 7], 95), 7.0)
+
+
+def _req(epoch, status=200, latency=0.01, client="1.2.3.4", path="/api/chat"):
+    return {"kind": "request", "ts": "", "epoch": epoch, "status": status,
+            "latency_s": latency, "client": client, "method": "POST",
+            "path": path, "level": None, "message": None, "model": None}
+
+
+class TestStats(unittest.TestCase):
+    def setUp(self):
+        self.now = time.time()
+
+    def test_counts_and_rate(self):
+        rows = [_req(self.now - i) for i in range(10)]
+        s = logs.stats(rows, window_sec=100)
+        self.assertEqual(s["count"], 10)
+        self.assertAlmostEqual(s["rps"], 0.1)
+
+    def test_error_rate_counts_non_2xx(self):
+        rows = [_req(self.now, status=200), _req(self.now, status=200),
+                _req(self.now, status=404), _req(self.now, status=401)]
+        s = logs.stats(rows, window_sec=100)
+        self.assertEqual(s["error_count"], 2)
+        self.assertAlmostEqual(s["error_rate"], 50.0)
+
+    def test_3xx_is_not_an_error(self):
+        s = logs.stats([_req(self.now, status=304)], window_sec=100)
+        self.assertEqual(s["error_count"], 0)
+
+    def test_percentiles_reported_in_seconds(self):
+        rows = [_req(self.now, latency=v / 1000.0) for v in range(1, 101)]
+        s = logs.stats(rows, window_sec=100)
+        self.assertAlmostEqual(s["p50_s"], 0.050, places=3)
+        self.assertAlmostEqual(s["p95_s"], 0.095, places=3)
+
+    def test_rows_outside_the_window_are_excluded(self):
+        rows = [_req(self.now), _req(self.now - 9999)]
+        self.assertEqual(logs.stats(rows, window_sec=60)["count"], 1)
+
+    def test_empty_window_is_all_zeroes_not_none(self):
+        s = logs.stats([], window_sec=60)
+        self.assertEqual(s["count"], 0)
+        self.assertEqual(s["rps"], 0)
+        self.assertEqual(s["error_rate"], 0)
+        self.assertIsNone(s["p95_s"])
+
+
+class TestTopEndpoints(unittest.TestCase):
+    def test_ranks_by_count_with_errors_and_p95(self):
+        now = time.time()
+        rows = ([_req(now, path="/api/chat", latency=1.0)] * 3
+                + [_req(now, path="/api/show", status=404, latency=0.002)])
+        out = logs.top_endpoints(rows, window_sec=100)
+        self.assertEqual(out[0]["path"], "/api/chat")
+        self.assertEqual(out[0]["count"], 3)
+        self.assertEqual(out[0]["errors"], 0)
+        self.assertAlmostEqual(out[0]["p95_s"], 1.0)
+        self.assertEqual(out[1]["errors"], 1)
+
+
+class TestByClient(unittest.TestCase):
+    def test_groups_by_address(self):
+        now = time.time()
+        rows = ([_req(now, client="172.17.0.3")] * 4
+                + [_req(now, client="127.0.0.1", status=500)])
+        out = logs.by_client(rows, window_sec=100)
+        self.assertEqual(out[0]["client"], "172.17.0.3")
+        self.assertEqual(out[0]["count"], 4)
+        self.assertEqual(out[1]["errors"], 1)
+
+    def test_last_seen_is_the_newest_epoch(self):
+        now = time.time()
+        rows = [_req(now - 50, client="a"), _req(now - 5, client="a")]
+        self.assertAlmostEqual(logs.by_client(rows, window_sec=100)[0]["last_seen"],
+                               now - 5)
+
+
+class TestProblems(unittest.TestCase):
+    def test_returns_newest_first_and_limits(self):
+        rows = [{"kind": "problem", "epoch": i, "level": "ERROR",
+                 "message": f"m{i}", "ts": "", "status": None, "latency_s": None,
+                 "client": None, "method": None, "path": None, "model": None}
+                for i in range(5)]
+        out = logs.problems(rows, limit=2)
+        self.assertEqual([p["message"] for p in out], ["m4", "m3"])
+
+
+class TestFollower(unittest.TestCase):
+    def test_read_window_is_empty_before_the_follower_starts(self):
+        self.assertEqual(logs.read_window(), [])
+
+    def test_ingest_appends_parsed_rows(self):
+        logs._BUF.clear()
+        logs._ingest('[GIN] 2026/07/30 - 23:06:17 | 200 |          1m8s '
+                     '|      172.17.0.3 | POST     "/api/chat"')
+        rows = logs.read_window()
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["latency_s"], 68.0)
+        logs._BUF.clear()
+
+    def test_ingest_drops_noise(self):
+        logs._BUF.clear()
+        logs._ingest('[GIN] 2026/07/30 - 23:25:18 | 200 |      51.336µs '
+                     '|             ::1 | GET      "/api/ps"')
+        self.assertEqual(logs.read_window(), [])
+
+    def test_buffer_is_bounded(self):
+        logs._BUF.clear()
+        line = ('[GIN] 2026/07/30 - 23:06:17 | 200 |      51.336µs '
+                '|      172.17.0.3 | POST     "/api/chat"')
+        for _ in range(logs.LOG_WINDOW_LINES + 500):
+            logs._ingest(line)
+        self.assertEqual(len(logs.read_window()), logs.LOG_WINDOW_LINES)
+        logs._BUF.clear()
+
+    def test_journalctl_command_follows_the_configured_unit(self):
+        cmd = logs._journal_cmd()
+        self.assertIn("journalctl", cmd[0])
+        self.assertIn("-u", cmd)
+        self.assertIn(logs.JOURNAL_UNIT, cmd)
+        self.assertIn("-f", cmd)
 
 
 if __name__ == "__main__":

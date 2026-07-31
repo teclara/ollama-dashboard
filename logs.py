@@ -121,39 +121,154 @@ def parse_lines(lines):
     return out
 
 
+# journald follower -----------------------------------------------------------
+#
+# One long-lived `journalctl -f`, mirroring the nvidia-smi and dmon streamers in
+# samplers.py and sources.py. Spawning journalctl once a second would work but
+# would re-read and re-parse the same tail on every tick.
+
+_BUF = deque(maxlen=LOG_WINDOW_LINES)
+_BUF_LOCK = threading.Lock()
+_LAST_LINE_TS = [0.0]
+_STOP = threading.Event()
+_STARTED = threading.Event()
+
+
+def _journal_cmd():
+    return ["journalctl", "-u", JOURNAL_UNIT, "-f", "-n", str(JOURNAL_BACKFILL),
+            "-o", "cat", "--no-pager"]
+
+
+def _ingest(line):
+    r = parse_line(line)
+    if r is None or is_noise(r):
+        return False
+    with _BUF_LOCK:
+        _BUF.append(r)
+        _LAST_LINE_TS[0] = time.time()
+    return True
+
+
+def _follow_loop():
+    while not _STOP.is_set():
+        try:
+            proc = subprocess.Popen(_journal_cmd(), stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            for line in proc.stdout:
+                if _STOP.is_set():
+                    break
+                _ingest(line.rstrip("\n"))
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        # journalctl exited — vacuum, rotation, or a killed process. Rebuild
+        # from the backfill rather than leaving a frozen window on screen.
+        _STOP.wait(2)
+
+
+def start_follower():
+    """Launch the journal follower. Idempotent."""
+    if _STARTED.is_set():
+        return
+    _STARTED.set()
+    threading.Thread(target=_follow_loop, daemon=True).start()
+
+
+def stop_follower():
+    """Used by tests; the server itself runs until killed."""
+    _STOP.set()
+    _STARTED.clear()
+
+
+def read_window():
+    with _BUF_LOCK:
+        return list(_BUF)
+
+
+def follower_age():
+    """Seconds since the last accepted line, or None if none ever arrived.
+
+    The UI must surface this. A dead follower otherwise presents a frozen
+    window as though it were current.
+    """
+    with _BUF_LOCK:
+        return time.time() - _LAST_LINE_TS[0] if _LAST_LINE_TS[0] else None
+
+
 # Aggregation ---------------------------------------------------------------
 
 def _recent(rows, window_sec):
     cutoff = time.time() - window_sec
-    return [r for r in rows if r["epoch"] >= cutoff]
+    return [r for r in rows if r.get("epoch", 0) >= cutoff]
+
+
+def _requests(rows, window_sec):
+    return [r for r in _recent(rows, window_sec) if r["kind"] == "request"]
+
+
+def _is_error(row):
+    s = row.get("status")
+    return s is not None and s >= 400
+
+
+def percentile(values, p):
+    """Nearest-rank percentile. None for an empty sample.
+
+    math.ceil, not round(x + 0.5): the latter hits Python's banker's rounding
+    on exact halves and returns the 96th of 100 samples for p95.
+    """
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    return vals[max(1, math.ceil(p / 100.0 * len(vals))) - 1]
 
 
 def stats(rows, window_sec=None):
     window_sec = window_sec or STATS_WINDOW_SEC
-    recent = [r for r in _recent(rows, window_sec) if r["kind"] == "request"]
-    return {"window_sec": window_sec, "count": len(recent),
-            "rps": round(len(recent) / window_sec, 2) if recent else 0}
+    reqs = _requests(rows, window_sec)
+    errors = [r for r in reqs if _is_error(r)]
+    lat = [r["latency_s"] for r in reqs]
+    return {
+        "window_sec": window_sec,
+        "count": len(reqs),
+        "rps": round(len(reqs) / window_sec, 2) if reqs else 0,
+        "error_count": len(errors),
+        "error_rate": round(len(errors) / len(reqs) * 100, 1) if reqs else 0,
+        "p50_s": percentile(lat, 50),
+        "p95_s": percentile(lat, 95),
+        "p99_s": percentile(lat, 99),
+    }
 
 
 def top_endpoints(rows, window_sec=None, top=8):
     window_sec = window_sec or STATS_WINDOW_SEC
-    counts = defaultdict(int)
-    for r in _recent(rows, window_sec):
-        if r["kind"] == "request": counts[r["path"]] += 1
-    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
-    return [{"path": p, "count": c} for p, c in ranked[:top]]
+    groups = defaultdict(list)
+    for r in _requests(rows, window_sec):
+        groups[r["path"]].append(r)
+    out = [{"path": p,
+            "count": len(rs),
+            "errors": sum(1 for r in rs if _is_error(r)),
+            "p95_s": percentile([r["latency_s"] for r in rs], 95)}
+           for p, rs in groups.items()]
+    return sorted(out, key=lambda x: -x["count"])[:top]
 
 
-_ACTIVITY_KEYS = {"completion": "completions", "prediction": "predictions",
-                  "tool_calls": "tool_calls", "stream_end": "streams"}
-
-
-def model_activity(rows, window_sec=None):
+def by_client(rows, window_sec=None, top=8):
+    """Per-client request counts. Impossible under LM Studio, whose logs
+    carried no client address at all."""
     window_sec = window_sec or STATS_WINDOW_SEC
-    by_model = defaultdict(lambda: {"completions": 0, "predictions": 0,
-                                    "tool_calls": 0, "streams": 0})
-    for r in _recent(rows, window_sec):
-        key = _ACTIVITY_KEYS.get(r["kind"])
-        if key and r["model"]: by_model[r["model"]][key] += 1
-    return sorted([{"model": m, **v} for m, v in by_model.items()],
-                  key=lambda x: -x["completions"])
+    groups = defaultdict(list)
+    for r in _requests(rows, window_sec):
+        groups[r["client"]].append(r)
+    out = [{"client": c,
+            "count": len(rs),
+            "errors": sum(1 for r in rs if _is_error(r)),
+            "last_seen": max(r["epoch"] for r in rs)}
+           for c, rs in groups.items()]
+    return sorted(out, key=lambda x: -x["count"])[:top]
+
+
+def problems(rows, limit=10):
+    probs = [r for r in rows if r["kind"] == "problem"]
+    return sorted(probs, key=lambda r: -r.get("epoch", 0))[:limit]
