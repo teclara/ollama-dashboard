@@ -132,6 +132,9 @@ _BUF_LOCK = threading.Lock()
 _LAST_LINE_TS = [0.0]
 _STOP = threading.Event()
 _STARTED = threading.Event()
+_PROC = [None]  # the in-flight journalctl Popen, if any; mutable cell so
+                # stop_follower() can reach it from another thread.
+_RETRY_DELAY_SEC = 2  # module-level so tests can shrink it for a fast respawn check
 
 
 def _journal_cmd():
@@ -154,17 +157,28 @@ def _follow_loop():
         try:
             proc = subprocess.Popen(_journal_cmd(), stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            _PROC[0] = proc
             for line in proc.stdout:
                 if _STOP.is_set():
                     break
                 _ingest(line.rstrip("\n"))
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # terminate() did not land. Kill outright rather than
+                # swallowing this and letting the next iteration spawn a
+                # second journalctl on top of one still running, which
+                # would double-ingest every line.
+                proc.kill()
+                proc.wait()
         except Exception:
             pass
+        finally:
+            _PROC[0] = None
         # journalctl exited — vacuum, rotation, or a killed process. Rebuild
         # from the backfill rather than leaving a frozen window on screen.
-        _STOP.wait(2)
+        _STOP.wait(_RETRY_DELAY_SEC)
 
 
 def start_follower():
@@ -176,8 +190,22 @@ def start_follower():
 
 
 def stop_follower():
-    """Used by tests; the server itself runs until killed."""
+    """Called by samplers.stop_all() on shutdown.
+
+    Terminating the in-flight journalctl subprocess (if any) is not an
+    optional nicety here: `for line in proc.stdout` in _follow_loop blocks
+    on the pipe and only re-checks _STOP after a line arrives. Against a
+    quiet unit that line may never come, so setting _STOP alone can never
+    unblock the thread — the subprocess itself has to be killed to force
+    the read to return.
+    """
     _STOP.set()
+    proc = _PROC[0]
+    if proc is not None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
     _STARTED.clear()
 
 

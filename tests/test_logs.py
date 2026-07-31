@@ -1,5 +1,8 @@
+import sys
+import threading
 import time
 import unittest
+from unittest import mock
 
 import logs
 from tests.helpers import fixture
@@ -290,6 +293,52 @@ class TestFollower(unittest.TestCase):
         self.assertIn("-u", cmd)
         self.assertIn(logs.JOURNAL_UNIT, cmd)
         self.assertIn("-f", cmd)
+
+
+class TestFollowerThreading(unittest.TestCase):
+    """Covers the two riskiest surfaces _follow_loop introduces: a thread
+    parked in a blocking pipe read, and respawn after the subprocess exits.
+    Both fake the subprocess via _journal_cmd, so neither depends on the
+    real journalctl or on multi-second sleeps beyond a bounded join."""
+
+    def tearDown(self):
+        logs.stop_follower()
+        logs._STOP.clear()
+        logs._STARTED.clear()
+        logs._BUF.clear()
+        logs._LAST_LINE_TS[0] = 0.0
+        logs._PROC[0] = None
+
+    def test_stop_follower_unblocks_a_thread_parked_in_the_blocking_read(self):
+        # A subprocess that stays alive and emits nothing, exactly like an
+        # idle `journalctl -f`. Before the fix, stop_follower() only set
+        # _STOP and never touched the subprocess, so the blocking
+        # `for line in proc.stdout` read never noticed and the thread
+        # never joined.
+        quiet_cmd = [sys.executable, "-c", "import time; time.sleep(5)"]
+        with mock.patch.object(logs, "_journal_cmd", lambda: quiet_cmd):
+            t = threading.Thread(target=logs._follow_loop, daemon=True)
+            t.start()
+            time.sleep(0.2)  # let Popen spawn and block on the pipe read
+            logs.stop_follower()
+            t.join(timeout=2)
+            self.assertFalse(t.is_alive())
+
+    def test_follower_respawns_after_the_subprocess_exits(self):
+        line = ('[GIN] 2026/07/30 - 23:06:17 | 200 |      51.336µs '
+                '|      172.17.0.3 | POST     "/api/chat"')
+        one_shot_cmd = [sys.executable, "-c", f"print({line!r})"]
+        with mock.patch.object(logs, "_journal_cmd", lambda: one_shot_cmd), \
+             mock.patch.object(logs, "_RETRY_DELAY_SEC", 0.05):
+            t = threading.Thread(target=logs._follow_loop, daemon=True)
+            t.start()
+            deadline = time.time() + 3
+            while time.time() < deadline and len(logs.read_window()) < 2:
+                time.sleep(0.05)
+            self.assertGreaterEqual(len(logs.read_window()), 2,
+                                    "follower did not respawn after exit")
+            logs.stop_follower()
+            t.join(timeout=2)
 
 
 if __name__ == "__main__":
