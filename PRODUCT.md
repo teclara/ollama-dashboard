@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Technical operators running LM Studio locally or on a private machine. They use the dashboard during model loading, inference, troubleshooting, and capacity checks, and need to understand system health without decoding an undifferentiated wall of metrics.
+Technical operators running Ollama locally or on a private machine. They use the dashboard during model loading, inference, troubleshooting, and capacity checks, and need to understand system health without decoding an undifferentiated wall of metrics.
 
 ## Product Purpose
 
-Provide a dependable operational view of LM Studio: loaded models, live compute and host health, inference activity, local inventory, jobs, controls, and configuration. Success means an operator can identify current state and anything requiring attention in seconds, then inspect full detail without losing context.
+Provide a dependable operational view of Ollama: loaded models, live compute and host health, inference activity, local inventory, jobs, controls, and configuration. Success means an operator can identify current state and anything requiring attention in seconds, then inspect full detail without losing context.
 
 ## Brand Personality
 
