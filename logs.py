@@ -129,7 +129,8 @@ def parse_lines(lines):
 
 _BUF = deque(maxlen=LOG_WINDOW_LINES)
 _BUF_LOCK = threading.Lock()
-_LAST_LINE_TS = [0.0]
+_LAST_LINE_TS = [0.0]   # last ACCEPTED row — how fresh the request window is
+_LAST_READ_TS = [0.0]   # last RAW line off journalctl — follower liveness
 _STOP = threading.Event()
 _STARTED = threading.Event()
 _PROC = [None]  # the in-flight journalctl Popen, if any; mutable cell so
@@ -161,6 +162,12 @@ def _follow_loop():
             for line in proc.stdout:
                 if _STOP.is_set():
                     break
+                # Stamp liveness on every raw line, BEFORE filtering. Doing it
+                # inside _ingest measured "time since the last interesting
+                # request" instead, so an idle Ollama looked like a dead
+                # follower and the staleness banner cried wolf.
+                with _BUF_LOCK:
+                    _LAST_READ_TS[0] = time.time()
                 _ingest(line.rstrip("\n"))
             proc.terminate()
             try:
@@ -215,13 +222,31 @@ def read_window():
 
 
 def follower_age():
-    """Seconds since the last accepted line, or None if none ever arrived.
+    """Seconds since the last row was ACCEPTED into the window, or None.
 
-    The UI must surface this. A dead follower otherwise presents a frozen
-    window as though it were current.
+    This tracks how fresh the displayed requests are. It is NOT a health
+    signal: a healthy follower watching an idle server accepts nothing, so
+    this grows without bound. Use follower_alive() to decide whether the
+    follower is broken.
     """
     with _BUF_LOCK:
         return time.time() - _LAST_LINE_TS[0] if _LAST_LINE_TS[0] else None
+
+
+def follower_read_age():
+    """Seconds since any raw line was read off journalctl, or None."""
+    with _BUF_LOCK:
+        return time.time() - _LAST_READ_TS[0] if _LAST_READ_TS[0] else None
+
+
+def follower_alive():
+    """Is the journalctl subprocess running?
+
+    The honest health check. Line arrival cannot distinguish "quiet server"
+    from "dead follower"; process state can.
+    """
+    proc = _PROC[0]
+    return proc is not None and proc.poll() is None
 
 
 # Aggregation ---------------------------------------------------------------

@@ -1,3 +1,4 @@
+import subprocess
 import sys
 import threading
 import time
@@ -343,3 +344,58 @@ class TestFollowerThreading(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFollowerLiveness(unittest.TestCase):
+    """Liveness and freshness are different questions. Conflating them made an
+    idle server look like a dead follower and fired a false staleness alarm."""
+
+    def setUp(self):
+        logs._BUF.clear()
+        logs._LAST_LINE_TS[0] = 0.0
+        logs._LAST_READ_TS[0] = 0.0
+        logs._PROC[0] = None
+
+    tearDown = setUp
+
+    def test_alive_is_false_with_no_subprocess(self):
+        self.assertFalse(logs.follower_alive())
+
+    def test_alive_is_true_while_the_subprocess_runs(self):
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        logs._PROC[0] = proc
+        try:
+            self.assertTrue(logs.follower_alive())
+        finally:
+            proc.kill(); proc.wait()
+
+    def test_alive_is_false_once_the_subprocess_exits(self):
+        proc = subprocess.Popen([sys.executable, "-c", ""])
+        proc.wait()
+        logs._PROC[0] = proc
+        self.assertFalse(logs.follower_alive())
+
+    def test_noise_only_traffic_does_not_look_like_a_dead_follower(self):
+        # THE regression. The dashboard's own loopback polling is filtered out,
+        # so it never reaches _LAST_LINE_TS. Reading it must still count as
+        # liveness, or a healthy follower on an idle server reads as broken.
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        logs._PROC[0] = proc
+        try:
+            noise = ('[GIN] 2026/07/30 - 23:25:18 | 200 |      51.336µs '
+                     '|             ::1 | GET      "/api/ps"')
+            self.assertTrue(logs.is_noise(logs.parse_line(noise)))
+            with logs._BUF_LOCK:
+                logs._LAST_READ_TS[0] = time.time()
+            logs._ingest(noise)
+            self.assertEqual(logs.read_window(), [])      # correctly filtered
+            self.assertIsNone(logs.follower_age())        # nothing accepted yet
+            self.assertLess(logs.follower_read_age(), 5)  # but we DID read
+            self.assertTrue(logs.follower_alive())        # and we are healthy
+        finally:
+            proc.kill(); proc.wait()
+
+    def test_accepted_row_updates_freshness(self):
+        logs._ingest('[GIN] 2026/07/30 - 23:06:17 | 200 |          1m8s '
+                     '|      172.17.0.3 | POST     "/api/chat"')
+        self.assertLess(logs.follower_age(), 5)

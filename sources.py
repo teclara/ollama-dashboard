@@ -444,6 +444,9 @@ def state():
         "by_client": logs.by_client(rows),
         "problems": logs.problems(rows),
         "log_age_s": logs.follower_age(),
+        # Liveness is the process, not line arrival: a healthy follower
+        # watching an idle server reads nothing for minutes at a time.
+        "log_follower_ok": logs.follower_alive(),
         "disk": samplers.DISK.get(),
         "service": samplers.SERVICE.get(),
         "tailscale": samplers.TAILSCALE.get(),

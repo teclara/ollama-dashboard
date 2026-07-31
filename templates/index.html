@@ -382,8 +382,11 @@ function renderState(s){
     if(s.ollama_ok === false){
       warn.push('Ollama unreachable — model panels will stay empty. Check OLLAMA_URL and `systemctl status ollama`.');
     }
-    if(s.log_age_s != null && s.log_age_s > 30){
-      warn.push(`Request log stale (${fmtDur(s.log_age_s)} since the last line) — the journal follower may have died.`);
+    // Keyed on the subprocess, not on silence. An idle Ollama produces no
+    // lines for minutes, which is not a fault — warning on that made the
+    // banner cry wolf on a perfectly healthy follower.
+    if(s.log_follower_ok === false){
+      warn.push('Journal follower is not running — request statistics have stopped updating.');
     }
     replace(el('banner'), warn.length
       ? ce('div',{cls:'card',style:'border-color:#fca5a5;color:#fca5a5'},
