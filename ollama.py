@@ -43,6 +43,12 @@ def api_post(path, payload, timeout=5):
         headers={"Content-Type": "application/json"}, method="POST")
     return _request(req, timeout)
 
+def api_delete(path, payload, timeout=30):
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}{path}", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="DELETE")
+    return _request(req, timeout)
+
 
 # Normalization (pure) ------------------------------------------------------
 

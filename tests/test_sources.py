@@ -126,3 +126,36 @@ class TestServiceInfo(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiskPermissionDenied(unittest.TestCase):
+    """/usr/share/ollama is 0750 ollama:ollama. os.path.isdir() is False for a
+    process outside that group, exactly as it is for a directory that does not
+    exist — but the two must not be reported the same way."""
+
+    def test_unreadable_store_is_flagged_approximate_not_reported_as_zero(self):
+        with mock.patch("sources._readable_dir", return_value=(True, False)), \
+             mock.patch("sources.ollama.library",
+                        return_value=[{"size": 100}, {"size": 200}]), \
+             mock.patch("sources._statvfs_walk_up", return_value=None):
+            info = sources.disk("/usr/share/ollama/.ollama/models")
+        self.assertEqual(info["models_size"], 300)
+        self.assertTrue(info["approximate"],
+                        "an unreadable store reported as exact is a confident lie")
+        self.assertIsNotNone(info["models_dir"])
+
+    def test_unreadable_store_still_reports_filesystem_totals(self):
+        fake = mock.Mock(f_blocks=1000, f_frsize=4096, f_bavail=250)
+        with mock.patch("sources._readable_dir", return_value=(True, False)), \
+             mock.patch("sources.ollama.library", return_value=[]), \
+             mock.patch("sources._statvfs_walk_up", return_value=fake):
+            info = sources.disk("/anywhere")
+        self.assertEqual(info["fs_total"], 4096000)
+        self.assertEqual(info["fs_free"], 1024000)
+
+    def test_genuinely_missing_directory_is_not_flagged_approximate(self):
+        with mock.patch("sources._readable_dir", return_value=(False, False)):
+            info = sources.disk("/definitely/not/here")
+        self.assertIsNone(info["models_dir"])
+        self.assertEqual(info["models_size"], 0)
+        self.assertFalse(info["approximate"])

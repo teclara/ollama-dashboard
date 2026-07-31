@@ -2,150 +2,192 @@ import unittest
 from unittest import mock
 
 import control
-import lmstudio
+import ollama
 
 
-class TestBuildLoadArgs(unittest.TestCase):
+class TestBuildLoadPayload(unittest.TestCase):
     def test_minimal(self):
-        self.assertEqual(control.build_load_args("google/gemma-4-31b"),
-                         ["load", "-y", "google/gemma-4-31b"])
+        p = control.build_load_payload("gemma4:12b")
+        self.assertEqual(p["model"], "gemma4:12b")
+        # An empty prompt makes /api/generate a pure load with no generation.
+        self.assertEqual(p["prompt"], "")
+        self.assertNotIn("options", p)
 
-    def test_all_options(self):
-        args = control.build_load_args(
-            "m", context=8192, gpu="max", ttl=300, parallel=2, identifier="fast")
-        self.assertEqual(args, ["load", "-y", "m", "-c", "8192", "--gpu", "max",
-                                "--ttl", "300", "--parallel", "2",
-                                "--identifier", "fast"])
+    def test_context_becomes_num_ctx(self):
+        self.assertEqual(
+            control.build_load_payload("m", context=8192)["options"]["num_ctx"], 8192)
 
-    def test_estimate_only_flag(self):
-        self.assertIn("--estimate-only", control.build_load_args("m", estimate=True))
+    def test_gpu_becomes_num_gpu(self):
+        self.assertEqual(
+            control.build_load_payload("m", gpu=99)["options"]["num_gpu"], 99)
 
-    def test_none_options_are_omitted(self):
-        args = control.build_load_args("m", context=None, gpu=None, ttl=None)
-        self.assertEqual(args, ["load", "-y", "m"])
+    def test_ttl_becomes_keep_alive(self):
+        self.assertEqual(control.build_load_payload("m", ttl="30m")["keep_alive"], "30m")
 
-    def test_numbers_are_stringified(self):
-        args = control.build_load_args("m", context=4096)
-        self.assertTrue(all(isinstance(a, str) for a in args))
+    def test_blank_options_are_omitted_not_sent_as_null(self):
+        # Sending num_ctx: null would override the server default with garbage.
+        p = control.build_load_payload("m", context="", gpu=None, ttl="")
+        self.assertNotIn("options", p)
+        self.assertNotIn("keep_alive", p)
 
+    def test_numeric_strings_are_coerced(self):
+        p = control.build_load_payload("m", context="8192", gpu="99")
+        self.assertEqual(p["options"]["num_ctx"], 8192)
+        self.assertEqual(p["options"]["num_gpu"], 99)
 
-class TestParseProgress(unittest.TestCase):
-    def test_percentage(self):
-        self.assertEqual(control.parse_progress("Downloading... 42.5%"), {"pct": 42.5})
-
-    def test_integer_percentage(self):
-        self.assertEqual(control.parse_progress("  7% done"), {"pct": 7.0})
-
-    def test_byte_pair(self):
-        r = control.parse_progress("1.50 GB / 3.00 GB")
-        self.assertAlmostEqual(r["completed"] / r["total"], 0.5, places=2)
-
-    def test_mixed_units(self):
-        r = control.parse_progress("512.00 MB / 2.00 GB")
-        self.assertAlmostEqual(r["completed"] / r["total"], 0.25, places=2)
-
-    def test_unrecognized_line(self):
-        self.assertIsNone(control.parse_progress("Resolving model..."))
-        self.assertIsNone(control.parse_progress(""))
-
-    def test_percentages_above_100_rejected(self):
-        """Guards against matching an unrelated number followed by %."""
-        self.assertIsNone(control.parse_progress("saved 250% of the time"))
+    def test_garbage_numbers_are_dropped_not_forwarded(self):
+        self.assertNotIn("options", control.build_load_payload("m", context="banana"))
 
 
-# Captured verbatim from `lms get -y qwen3.5` on 2026-07-26, including the
-# spinner glyph, bar, and the trailing ANSI cursor-restore escapes.
-REAL_PROGRESS = (
-    "⠏ [███                  ] 1.48% | 96.97 MB / 6.55 GB "
-    "|  9.46 MB/s | ETA 11:22          \x1b[u\x1b[?25l\x1b[s"
-)
+class TestPullProgress(unittest.TestCase):
+    def test_sums_across_layers(self):
+        # Ollama reports completed/total per blob digest. Taking the latest
+        # pair would make the bar jump backwards each time a layer starts.
+        p = control.PullProgress()
+        p.update({"digest": "sha256:a", "completed": 100, "total": 100})
+        p.update({"digest": "sha256:b", "completed": 50, "total": 200})
+        s = p.snapshot()
+        self.assertEqual(s["completed"], 150)
+        self.assertEqual(s["total"], 300)
+        self.assertAlmostEqual(s["pct"], 50.0)
+
+    def test_progress_never_goes_backwards_across_a_real_stream(self):
+        p = control.PullProgress()
+        events = [
+            {"status": "pulling manifest"},
+            {"status": "pulling 970aa74c0a90", "digest": "sha256:970a",
+             "total": 274290656, "completed": 137145328},
+            {"status": "pulling 970aa74c0a90", "digest": "sha256:970a",
+             "total": 274290656, "completed": 274290656},
+            {"status": "pulling c71d239df917", "digest": "sha256:c71d",
+             "total": 11357, "completed": 0},
+            {"status": "verifying sha256 digest"},
+            {"status": "success"},
+        ]
+        seen = []
+        for e in events:
+            p.update(e)
+            pct = p.snapshot()["pct"]
+            if pct is not None:
+                seen.append(pct)
+        self.assertEqual(seen, sorted(seen), f"progress regressed: {seen}")
+
+    def test_indeterminate_status_preserves_the_last_percentage(self):
+        p = control.PullProgress()
+        p.update({"digest": "sha256:a", "completed": 50, "total": 100})
+        before = p.snapshot()["pct"]
+        p.update({"status": "verifying sha256 digest"})
+        self.assertEqual(p.snapshot()["pct"], before)
+
+    def test_status_is_carried_through(self):
+        p = control.PullProgress()
+        p.update({"status": "pulling manifest"})
+        self.assertEqual(p.snapshot()["last_line"], "pulling manifest")
+
+    def test_empty_progress_has_no_percentage(self):
+        self.assertIsNone(control.PullProgress().snapshot()["pct"])
+
+    def test_rate_is_derived_from_deltas(self):
+        p = control.PullProgress()
+        p.update({"digest": "a", "completed": 0, "total": 1000}, now=100.0)
+        p.update({"digest": "a", "completed": 500, "total": 1000}, now=102.0)
+        self.assertAlmostEqual(p.snapshot()["rate_bps"], 250.0)
+
+    def test_eta_is_derived_from_rate(self):
+        p = control.PullProgress()
+        p.update({"digest": "a", "completed": 0, "total": 1000}, now=100.0)
+        p.update({"digest": "a", "completed": 500, "total": 1000}, now=102.0)
+        self.assertAlmostEqual(p.snapshot()["eta_s"], 2.0)
 
 
-class TestRealLmsGetOutput(unittest.TestCase):
-    """`lms get` draws a live bar: CR-delimited, ANSI-laden, not newline separated."""
-
-    def test_parses_a_real_progress_segment(self):
-        r = control.parse_progress(REAL_PROGRESS)
-        self.assertEqual(r["pct"], 1.48)
-        self.assertEqual(r["completed"], int(96.97 * 1024**2))
-        self.assertEqual(r["total"], int(6.55 * 1024**3))
-        self.assertEqual(r["rate_bps"], int(9.46 * 1024**2))
-        self.assertEqual(r["eta"], "11:22")
-
-    def test_ansi_escapes_are_stripped(self):
-        self.assertNotIn("\x1b", control.clean_line(REAL_PROGRESS))
-
-    def test_eta_is_not_mistaken_for_progress(self):
-        """ETA 11:22 must not be read as a byte or percent figure."""
-        r = control.parse_progress(REAL_PROGRESS)
-        self.assertLess(r["pct"], 2)
-
-    def test_segments_split_on_carriage_returns(self):
-        """The whole download arrives as one CR-updated line; splitting on \\n alone
-        would surface a single unterminated segment and never update the UI."""
-        import io
-        stream = io.StringIO("\r".join(["a 1.0% | 1.00 MB / 10.00 MB",
-                                        "b 2.0% | 2.00 MB / 10.00 MB",
-                                        "c 3.0% | 3.00 MB / 10.00 MB"]))
-        segs = list(control._stream_segments(stream, chunk_size=7))
-        self.assertEqual(len(segs), 3)
-        self.assertEqual(control.parse_progress(segs[-1])["pct"], 3.0)
-
-    def test_stream_segments_handles_mixed_crlf(self):
-        import io
-        segs = list(control._stream_segments(io.StringIO("one\r\ntwo\nthree\r"), 4))
-        self.assertEqual([s.strip() for s in segs], ["one", "two", "three"])
-
-
-class TestEstimateLoad(unittest.TestCase):
-    """`lms load --estimate-only` writes to stderr, not stdout."""
-
-    def test_merges_stderr_or_the_estimate_is_lost(self):
-        with mock.patch.object(lmstudio, "run_lms", return_value="Estimated GPU Memory: 1 GiB") as m:
-            r = control.estimate_load("m")
-        self.assertTrue(r["ok"])
-        self.assertIn("Estimated GPU Memory", r["output"])
-        self.assertTrue(m.call_args.kwargs.get("merge_stderr"),
-                        "estimate_load must pass merge_stderr=True")
-
-    def test_empty_output_is_an_error_not_a_silent_success(self):
-        with mock.patch.object(lmstudio, "run_lms", return_value="   "):
-            r = control.estimate_load("m")
-        self.assertFalse(r["ok"])
-        self.assertIn("no estimate", r["error"])
-
-    def test_lms_failure_is_reported(self):
-        with mock.patch.object(lmstudio, "run_lms",
-                               side_effect=lmstudio.LmsError("boom")):
-            r = control.estimate_load("m")
-        self.assertFalse(r["ok"])
-        self.assertIn("boom", r["error"])
-
-
-class TestJobMap(unittest.TestCase):
+class TestLoadJob(unittest.TestCase):
     def setUp(self):
         control.clear_all_jobs()
 
-    def test_starts_empty(self):
-        self.assertEqual(control.get_jobs(), {})
+    def test_start_load_claims_a_slot(self):
+        with mock.patch("control.threading.Thread"):
+            self.assertTrue(control.start_load("m"))
+            self.assertFalse(control.start_load("m"))
 
-    def test_private_keys_are_not_exposed(self):
-        control._set_job("x", {"kind": "load", "done": True, "_secret": 1})
-        self.assertNotIn("_secret", control.get_jobs()["x"])
+    def test_load_marks_done_on_load_reason(self):
+        control._claim_job("m", "load")
+        with mock.patch("control.ollama.api_post",
+                        return_value={"done": True, "done_reason": "load"}):
+            control._run_load("m", {"model": "m", "prompt": ""})
+        job = control.get_jobs()["m"]
+        self.assertTrue(job["done"])
+        self.assertIsNone(job["error"])
 
-    def test_clear_finished_keeps_running_jobs(self):
-        control._set_job("done", {"kind": "load", "done": True})
-        control._set_job("busy", {"kind": "load", "done": False})
-        control.clear_finished_jobs()
-        self.assertEqual(list(control.get_jobs()), ["busy"])
+    def test_unexpected_done_reason_is_recorded_as_an_error(self):
+        control._claim_job("m", "load")
+        with mock.patch("control.ollama.api_post",
+                        return_value={"done": True, "done_reason": "stop"}):
+            control._run_load("m", {"model": "m", "prompt": ""})
+        self.assertIn("stop", control.get_jobs()["m"]["error"])
 
-    def test_duplicate_start_is_refused_while_running(self):
-        control._set_job("m", {"kind": "load", "done": False})
-        self.assertFalse(control._claim_job("m", "load"))
+    def test_load_records_an_error_when_the_api_fails(self):
+        control._claim_job("m", "load")
+        with mock.patch("control.ollama.api_post",
+                        side_effect=ollama.OllamaError("HTTP 500")):
+            control._run_load("m", {"model": "m", "prompt": ""})
+        job = control.get_jobs()["m"]
+        self.assertTrue(job["done"])
+        self.assertIn("HTTP 500", job["error"])
 
-    def test_restart_allowed_once_finished(self):
-        control._set_job("m", {"kind": "load", "done": True})
-        self.assertTrue(control._claim_job("m", "load"))
+
+class TestUnload(unittest.TestCase):
+    def test_unload_sends_keep_alive_zero(self):
+        with mock.patch("control.ollama.api_post") as post:
+            control.unload_model("gemma4:12b")
+        payload = post.call_args[0][1]
+        self.assertEqual(payload["model"], "gemma4:12b")
+        self.assertEqual(payload["keep_alive"], 0)
+
+    def test_unload_all_iterates_loaded_models(self):
+        with mock.patch("control.ollama.loaded_models",
+                        return_value=[{"model_key": "a:1"}, {"model_key": "b:1"}]), \
+             mock.patch("control.ollama.api_post") as post:
+            control.unload_all()
+        self.assertEqual([c[0][1]["model"] for c in post.call_args_list],
+                         ["a:1", "b:1"])
+
+    def test_unload_all_with_nothing_loaded_is_a_noop(self):
+        with mock.patch("control.ollama.loaded_models", return_value=[]), \
+             mock.patch("control.ollama.api_post") as post:
+            control.unload_all()
+        post.assert_not_called()
+
+
+class TestEstimateFit(unittest.TestCase):
+    def test_compares_model_size_to_free_vram(self):
+        # Replaces `lms load --estimate-only`, which has no Ollama equivalent.
+        with mock.patch("control.ollama.library",
+                        return_value=[{"model_key": "m", "size": 20_000_000_000}]), \
+             mock.patch("control.sources.gpu",
+                        return_value={"mem_used": 1000, "mem_total": 32_600}):
+            out = control.estimate_fit("m")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["model_bytes"], 20_000_000_000)
+        self.assertGreater(out["free_bytes"], 0)
+
+    def test_reports_when_a_model_does_not_fit(self):
+        with mock.patch("control.ollama.library",
+                        return_value=[{"model_key": "m", "size": 90_000_000_000}]), \
+             mock.patch("control.sources.gpu",
+                        return_value={"mem_used": 1000, "mem_total": 32_600}):
+            self.assertFalse(control.estimate_fit("m")["fits"])
+
+    def test_unknown_model(self):
+        with mock.patch("control.ollama.library", return_value=[]):
+            self.assertFalse(control.estimate_fit("nope")["ok"])
+
+    def test_gpu_error_propagates_as_not_ok(self):
+        with mock.patch("control.ollama.library",
+                        return_value=[{"model_key": "m", "size": 1}]), \
+             mock.patch("control.sources.gpu", return_value={"error": "no nvidia-smi"}):
+            out = control.estimate_fit("m")
+        self.assertFalse(out["ok"])
+        self.assertIn("nvidia-smi", out["error"])
 
 
 if __name__ == "__main__":

@@ -179,13 +179,42 @@ def _du(root):
         return None
 
 
+def _readable_dir(path):
+    """(exists, readable). os.path.isdir is False for BOTH a missing directory
+    and one we lack traverse permission on, and those need opposite handling:
+    missing means "nothing there", unreadable means "67 GB we cannot see".
+    Reporting the second as an exact zero would be a confident lie."""
+    if os.path.isdir(path):
+        return True, True
+    parent = os.path.dirname(path.rstrip(os.sep))
+    while parent and parent != os.sep:
+        if os.path.exists(parent):
+            # A parent resolves but the target does not: either genuinely
+            # absent, or hidden behind a mode we cannot traverse.
+            return not os.access(parent, os.X_OK), False
+        parent = os.path.dirname(parent)
+    return False, False
+
+
 def disk(root=None):
     root = root or models_root(settings())
     info = {"models_dir": None, "models_size": 0, "approximate": False,
             "orphan_bytes": None, "fs_used": 0, "fs_total": 0, "fs_free": 0}
-    if not os.path.isdir(root):
+    exists, readable = _readable_dir(root)
+    if not exists:
         return info
     info["models_dir"] = root
+    if not readable:
+        # Permission-denied: fall through to the /api/tags sum below, which
+        # counts only referenced blobs and therefore understates the truth.
+        info["approximate"] = True
+        info["models_size"] = sum(m.get("size") or 0 for m in ollama.library())
+        st = _statvfs_walk_up(root)
+        if st is not None:
+            info["fs_total"] = st.f_blocks * st.f_frsize
+            info["fs_free"] = st.f_bavail * st.f_frsize
+            info["fs_used"] = info["fs_total"] - info["fs_free"]
+        return info
 
     referenced = sum(m.get("size") or 0 for m in ollama.library())
     exact = _du(root)
