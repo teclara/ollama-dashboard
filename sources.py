@@ -435,7 +435,7 @@ def state():
     return {
         **live(),
         "gpu_processes": samplers.GPU_PROCS.get(),
-        "gpu_versions": nvidia_versions(),
+        "gpu_versions": samplers.GPU_VERSIONS.get(),
         "loaded": samplers.LOADED.get(),
         "library": samplers.LIBRARY.get(),
         "requests": rows[-30:][::-1],

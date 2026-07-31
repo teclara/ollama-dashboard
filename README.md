@@ -1,6 +1,6 @@
 # Ollama Dashboard
 
-A local dashboard for [Ollama](https://ollama.com). Live view of loaded models, the on-disk library, GPU and host metrics, plus a control panel for loading and unloading models, pulling from `ollama.com/library`, and deleting models.
+A local dashboard for [Ollama](https://ollama.com). Live view of loaded models, the on-disk library, GPU and host metrics, plus a control panel for loading, benchmarking, pulling, and deleting models.
 
 No dependencies — Python 3 standard library only.
 
@@ -14,6 +14,8 @@ Defaults to `http://127.0.0.1:11435` and expects Ollama on `http://localhost:114
 
 - Dashboard: `http://localhost:11435/`
 - Control panel: `http://localhost:11435/control`
+
+The interface is organized into six addressable workspaces rather than one long dashboard: **Overview**, **Activity**, **Models**, **Performance**, **System**, and **Settings**. Desktop uses a persistent workspace rail; narrow screens use an accessible navigation drawer.
 
 Ollama must be running (`systemctl status ollama`). Everything goes over Ollama's HTTP API — there is no CLI dependency.
 
@@ -34,12 +36,13 @@ With the `ollama` group the dashboard also reports **reclaimable** space — the
 
 ## How it refreshes
 
-The dashboard polls two endpoints:
+The monitoring interface polls three cache-only endpoints:
 
 - **`/api/live`** — GPU, host CPU/RAM, and PCIe throughput. About 1 KB, polled 10×/second.
 - **`/api/state`** — everything else: model lists, request panels, service info, settings. Polled every 2 seconds.
+- **`/api/control/jobs`** — active and failed background work shown on Overview. Polled every second.
 
-Neither endpoint does any work on the request path. Every source is sampled by a background thread on its own cadence and served from memory.
+None of these endpoints does source work on the request path. Every source is sampled by a background thread on its own cadence and served from memory.
 
 Ollama's API is fast enough that this is not about latency. It exists because polling from the request path would flood the GIN access log that the dashboard exists to display — every refresh would appear as a logged, timed, client-attributed request, crowding out the real traffic — and because `du -sb` over a 60+ GB model store must never block a response.
 
@@ -61,6 +64,7 @@ Because GIN logs a line when a request *completes*, the span matters: a request 
 
 - **Load** with explicit `num_ctx`, `num_gpu` and `keep_alive`. Ollama keys a distinct runner per option set, so these genuinely apply per load. `OLLAMA_NUM_PARALLEL` and `OLLAMA_MAX_LOADED_MODELS` are server-wide and shown read-only beside the form.
 - **Check fit** compares the model's on-disk size to free VRAM. It is not an estimate — Ollama has no equivalent of LM Studio's `--estimate-only` — and it ignores KV cache and context, so treat it as a smell test.
+- **Benchmark** runs local completion models sequentially with configurable warm-up and measured runs. It reports median time to first token, prompt tokens/second, generation tokens/second, total time, and per-run evidence using Ollama's own token counts and nanosecond timings. Benchmark jobs are exclusive of dashboard-initiated model operations; other clients must be kept idle for clean results. Embedding models are excluded because they require a different workload and metrics.
 - **Pull** streams progress from `/api/pull`. Progress is reported per blob digest and summed across layers, so the bar does not walk backwards at layer boundaries.
 - **Delete** calls `DELETE /api/delete`. It refuses to delete a loaded model, and requires the model name typed back verbatim.
 
@@ -116,7 +120,7 @@ It runs as a *user* unit because it needs your group memberships (`adm`, `ollama
 python3 -m pytest -q
 ```
 
-191 tests, standard library only, no running Ollama required. Fixtures are captured from a real instance: `/api/tags`, `/api/ps`, a journald excerpt with real GIN lines, and the `ollama.com/library` HTML.
+225 tests, standard library only, no running Ollama required. Fixtures are captured from a real instance: `/api/tags`, `/api/ps`, a journald excerpt with real GIN lines, and the `ollama.com/library` HTML.
 
 ## Layout
 
@@ -129,6 +133,8 @@ sources.py         read-only state (gpu, host, disk, service, tailscale)
 control.py         load, unload, pull, delete, catalog scrape
 server.py          HTTP routing + main
 templates/
+  app.css          shared shell and design tokens
+  app.js           workspace routing and responsive navigation
   index.html       dashboard UI
   control.html     control panel UI
 tests/             unittest suite + captured fixtures

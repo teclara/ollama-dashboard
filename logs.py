@@ -11,7 +11,7 @@ only place the journal names a model is by weights-blob SHA, which does not
 match the manifest digest in /api/tags. Model attribution is done instead by
 samplers.MODEL_TIMELINE and is inferred, not observed.
 """
-import math, re, subprocess, threading, time
+import json, math, re, subprocess, threading, time
 from collections import defaultdict, deque
 from datetime import datetime
 
@@ -135,12 +135,17 @@ _STOP = threading.Event()
 _STARTED = threading.Event()
 _PROC = [None]  # the in-flight journalctl Popen, if any; mutable cell so
                 # stop_follower() can reach it from another thread.
+_CURSOR = [None]  # last journald cursor consumed; resumes without replaying
 _RETRY_DELAY_SEC = 2  # module-level so tests can shrink it for a fast respawn check
 
 
 def _journal_cmd():
-    return ["journalctl", "-u", JOURNAL_UNIT, "-f", "-n", str(JOURNAL_BACKFILL),
-            "-o", "cat", "--no-pager"]
+    cmd = ["journalctl", "-u", JOURNAL_UNIT, "-f", "-o", "json", "--no-pager"]
+    if _CURSOR[0]:
+        cmd.append(f"--after-cursor={_CURSOR[0]}")
+    else:
+        cmd.extend(["-n", str(JOURNAL_BACKFILL)])
+    return cmd
 
 
 def _ingest(line):
@@ -149,12 +154,16 @@ def _ingest(line):
         return False
     with _BUF_LOCK:
         _BUF.append(r)
-        _LAST_LINE_TS[0] = time.time()
+        if r["kind"] == "request":
+            _LAST_LINE_TS[0] = max(_LAST_LINE_TS[0], r.get("epoch") or 0)
     return True
 
 
 def _follow_loop():
     while not _STOP.is_set():
+        proc = None
+        read_any = False
+        returncode = None
         try:
             proc = subprocess.Popen(_journal_cmd(), stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, text=True, bufsize=1)
@@ -162,29 +171,50 @@ def _follow_loop():
             for line in proc.stdout:
                 if _STOP.is_set():
                     break
+                read_any = True
+                line = line.rstrip("\n")
+                try:
+                    event = json.loads(line)
+                    message = event.get("MESSAGE", "")
+                    cursor = event.get("__CURSOR")
+                except (TypeError, ValueError):
+                    # Keeps the parser usable with captured/plain output.
+                    message, cursor = line, None
                 # Stamp liveness on every raw line, BEFORE filtering. Doing it
                 # inside _ingest measured "time since the last interesting
                 # request" instead, so an idle Ollama looked like a dead
                 # follower and the staleness banner cried wolf.
                 with _BUF_LOCK:
                     _LAST_READ_TS[0] = time.time()
-                _ingest(line.rstrip("\n"))
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                # terminate() did not land. Kill outright rather than
-                # swallowing this and letting the next iteration spawn a
-                # second journalctl on top of one still running, which
-                # would double-ingest every line.
-                proc.kill()
-                proc.wait()
+                if cursor:
+                    _CURSOR[0] = cursor
+                if isinstance(message, str):
+                    _ingest(message)
         except Exception:
             pass
         finally:
+            if proc is not None:
+                try:
+                    if proc.poll() is None:
+                        proc.terminate()
+                    returncode = proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # terminate() did not land. Kill outright rather than
+                    # letting the next iteration spawn a second follower.
+                    proc.kill()
+                    returncode = proc.wait()
+                except Exception:
+                    pass
             _PROC[0] = None
-        # journalctl exited — vacuum, rotation, or a killed process. Rebuild
-        # from the backfill rather than leaving a frozen window on screen.
+        if returncode and not read_any and _CURSOR[0] and not _STOP.is_set():
+            # Vacuum can invalidate a cursor. Drop the old window before one
+            # backfill rebuild so replayed rows cannot duplicate retained rows.
+            with _BUF_LOCK:
+                _BUF.clear()
+                _LAST_LINE_TS[0] = 0.0
+            _CURSOR[0] = None
+        # journalctl exited — vacuum, rotation, or a killed process. Resume
+        # after the last cursor rather than replaying the backfill.
         _STOP.wait(_RETRY_DELAY_SEC)
 
 
@@ -222,7 +252,7 @@ def read_window():
 
 
 def follower_age():
-    """Seconds since the last row was ACCEPTED into the window, or None.
+    """Seconds since the last displayed request occurred, or None.
 
     This tracks how fresh the displayed requests are. It is NOT a health
     signal: a healthy follower watching an idle server accepts nothing, so

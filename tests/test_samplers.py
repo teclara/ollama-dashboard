@@ -6,24 +6,23 @@ import sources
 
 
 class TestSampled(unittest.TestCase):
-    def test_computes_synchronously_on_first_access(self):
-        """A request arriving before the first background tick must get real
-        data, not a hole."""
+    def test_cold_access_returns_default_without_computing(self):
         calls = []
-        s = samplers.Sampled(lambda: calls.append(1) or "value")
-        self.assertEqual(s.peek(), (None, False))
-        self.assertEqual(s.get(), "value")
-        self.assertEqual(len(calls), 1)
+        s = samplers.Sampled(lambda: calls.append(1) or "value", default="pending")
+        self.assertEqual(s.peek(), ("pending", False))
+        self.assertEqual(s.get(), "pending")
+        self.assertEqual(calls, [])
 
-    def test_second_access_does_not_recompute(self):
+    def test_repeated_access_never_computes(self):
         calls = []
         s = samplers.Sampled(lambda: (calls.append(1), "v")[1])
         s.get(); s.get(); s.get()
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls, [])
 
     def test_refresh_updates_the_value(self):
         seq = iter(["first", "second"])
         s = samplers.Sampled(lambda: next(seq))
+        s.refresh()
         self.assertEqual(s.get(), "first")
         s.refresh()
         self.assertEqual(s.get(), "second")
@@ -34,6 +33,7 @@ class TestSampled(unittest.TestCase):
             if state["fail"]: raise RuntimeError("boom")
             return "good"
         s = samplers.Sampled(fn)
+        s.refresh()
         self.assertEqual(s.get(), "good")
         state["fail"] = True
         s.refresh()  # must not raise
@@ -41,6 +41,7 @@ class TestSampled(unittest.TestCase):
 
     def test_failing_source_on_cold_start_yields_the_default(self):
         s = samplers.Sampled(lambda: (_ for _ in ()).throw(RuntimeError("boom")), default=[])
+        s.refresh()
         self.assertEqual(s.get(), [])
 
     def test_peek_never_computes(self):
@@ -49,8 +50,7 @@ class TestSampled(unittest.TestCase):
         self.assertEqual(s.peek(), (None, False))
         self.assertEqual(calls, [])
 
-    def test_concurrent_cold_start_computes_once(self):
-        """A burst of first requests must not all shell out simultaneously."""
+    def test_concurrent_cold_reads_never_compute(self):
         calls = []
         def slow():
             calls.append(1)
@@ -60,7 +60,7 @@ class TestSampled(unittest.TestCase):
         threads = [threading.Thread(target=s.get) for _ in range(8)]
         for t in threads: t.start()
         for t in threads: t.join()
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls, [])
 
     def test_age_is_none_before_first_sample(self):
         self.assertIsNone(samplers.Sampled(lambda: 1).age())
@@ -146,6 +146,11 @@ class TestLivePayload(unittest.TestCase):
         live = sources.live()
         for k in ("library", "loaded", "requests", "settings", "model_activity"):
             self.assertNotIn(k, live)
+
+    def test_state_does_not_probe_nvidia_versions_on_request(self):
+        with mock.patch.object(sources, "nvidia_versions") as versions:
+            sources.state()
+        versions.assert_not_called()
 
 
 class TestModelTimeline(unittest.TestCase):
@@ -238,6 +243,14 @@ class TestModelTimeline(unittest.TestCase):
         self._obs("a:1", 100.0, ttl=600)
         rows = [{"kind": "request", "epoch": 150.0, "latency_s": 20.0, "model": None}]
         self.assertEqual(samplers.attribute(rows)[0]["model"], "a:1")
+
+    def test_a_partially_covered_span_is_unattributed(self):
+        intervals = [(100.0, 200.0, "a:1")]
+        self.assertIsNone(samplers.model_during(90.0, 150.0, intervals))
+
+    def test_a_gap_between_same_model_intervals_is_unattributed(self):
+        intervals = [(100.0, 120.0, "a:1"), (130.0, 200.0, "a:1")]
+        self.assertIsNone(samplers.model_during(110.0, 150.0, intervals))
 
     def test_a_long_request_is_not_credited_to_a_later_model(self):
         # The 7-minute /api/pull case: without span logic this was attributed

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 python3 server.py                                    # run on http://127.0.0.1:11435
-python3 -m pytest -q                                 # full suite (191 tests, ~1.3s)
+python3 -m pytest -q                                 # full suite (225 tests, ~1.3s)
 python3 -m pytest tests/test_logs.py -v              # one file
 python3 -m pytest tests/test_logs.py::TestParseDuration::test_compound_minutes_and_seconds -q
 python3 -m unittest discover -s tests                # also works; tests are unittest-style

@@ -34,6 +34,10 @@ class TestRoutes(unittest.TestCase):
     def test_control_panel_served(self):
         self.assertEqual(self._req("/control")[0], 200)
 
+    def test_shared_app_assets_are_served(self):
+        self.assertEqual(self._req("/assets/app.css")[0], 200)
+        self.assertEqual(self._req("/assets/app.js")[0], 200)
+
     def test_unknown_path_404s(self):
         self.assertEqual(self._req("/nope")[0], 404)
 
@@ -72,6 +76,11 @@ class TestRoutes(unittest.TestCase):
         code, body = self._req("/api/control/download", "POST", {"name": "  "})
         self.assertEqual(code, 400)
 
+    def test_benchmark_requires_models(self):
+        code, body = self._req("/api/control/benchmark", "POST", {})
+        self.assertEqual(code, 400)
+        self.assertIn("models", json.loads(body)["error"])
+
     def test_delete_requires_matching_confirmation(self):
         code, body = self._req("/api/control/model", "DELETE",
                                {"name": "x", "confirm": "y"})
@@ -83,6 +92,14 @@ class TestRoutes(unittest.TestCase):
 
     def test_unload_requires_identifier_or_all(self):
         self.assertEqual(self._req("/api/control/unload", "POST", {})[0], 400)
+
+    def test_json_body_must_be_an_object(self):
+        self.assertEqual(self._req("/api/control/load", "POST", ["model"])[0], 400)
+
+    def test_json_body_size_is_bounded(self):
+        code, body = self._req("/api/control/load", "POST", {"model": "x" * 70000})
+        self.assertEqual(code, 400)
+        self.assertIn("request body", json.loads(body)["error"])
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 import threading
@@ -261,6 +262,12 @@ class TestProblems(unittest.TestCase):
 
 
 class TestFollower(unittest.TestCase):
+    def setUp(self):
+        logs._CURSOR[0] = None
+
+    def tearDown(self):
+        logs._CURSOR[0] = None
+
     def test_read_window_is_empty_before_the_follower_starts(self):
         self.assertEqual(logs.read_window(), [])
 
@@ -309,6 +316,7 @@ class TestFollowerThreading(unittest.TestCase):
         logs._BUF.clear()
         logs._LAST_LINE_TS[0] = 0.0
         logs._PROC[0] = None
+        logs._CURSOR[0] = None
 
     def test_stop_follower_unblocks_a_thread_parked_in_the_blocking_read(self):
         # A subprocess that stays alive and emits nothing, exactly like an
@@ -325,21 +333,38 @@ class TestFollowerThreading(unittest.TestCase):
             t.join(timeout=2)
             self.assertFalse(t.is_alive())
 
-    def test_follower_respawns_after_the_subprocess_exits(self):
-        line = ('[GIN] 2026/07/30 - 23:06:17 | 200 |      51.336µs '
-                '|      172.17.0.3 | POST     "/api/chat"')
-        one_shot_cmd = [sys.executable, "-c", f"print({line!r})"]
-        with mock.patch.object(logs, "_journal_cmd", lambda: one_shot_cmd), \
-             mock.patch.object(logs, "_RETRY_DELAY_SEC", 0.05):
-            t = threading.Thread(target=logs._follow_loop, daemon=True)
-            t.start()
-            deadline = time.time() + 3
-            while time.time() < deadline and len(logs.read_window()) < 2:
-                time.sleep(0.05)
-            self.assertGreaterEqual(len(logs.read_window()), 2,
-                                    "follower did not respawn after exit")
-            logs.stop_follower()
-            t.join(timeout=2)
+    def test_cursor_resume_does_not_request_the_backfill_again(self):
+        logs._CURSOR[0] = "s=cursor"
+        cmd = logs._journal_cmd()
+        self.assertIn("--after-cursor=s=cursor", cmd)
+        self.assertNotIn("-n", cmd)
+
+    def test_json_output_records_the_cursor_and_message_once(self):
+        message = ('[GIN] 2026/07/30 - 23:06:17 | 200 |      51.336µs '
+                   '|      172.17.0.3 | POST     "/api/chat"')
+
+        class FakeProc:
+            def __init__(self):
+                self.stdout = self
+                self.sent = False
+
+            def __iter__(self): return self
+
+            def __next__(self):
+                if self.sent:
+                    logs._STOP.set()
+                    raise StopIteration
+                self.sent = True
+                return json.dumps({"MESSAGE": message, "__CURSOR": "s=next"}) + "\n"
+
+            def terminate(self): pass
+            def wait(self, timeout=None): return 0
+            def poll(self): return None
+
+        with mock.patch.object(logs.subprocess, "Popen", return_value=FakeProc()):
+            logs._follow_loop()
+        self.assertEqual(logs._CURSOR[0], "s=next")
+        self.assertEqual(len(logs.read_window()), 1)
 
 
 if __name__ == "__main__":
@@ -396,6 +421,9 @@ class TestFollowerLiveness(unittest.TestCase):
             proc.kill(); proc.wait()
 
     def test_accepted_row_updates_freshness(self):
-        logs._ingest('[GIN] 2026/07/30 - 23:06:17 | 200 |          1m8s '
-                     '|      172.17.0.3 | POST     "/api/chat"')
-        self.assertLess(logs.follower_age(), 5)
+        line = ('[GIN] 2026/07/30 - 23:06:17 | 200 |          1m8s '
+                '|      172.17.0.3 | POST     "/api/chat"')
+        event_time = logs.parse_line(line)["epoch"]
+        with mock.patch.object(logs.time, "time", return_value=event_time + 5):
+            logs._ingest(line)
+            self.assertEqual(logs.follower_age(), 5)

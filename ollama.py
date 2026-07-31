@@ -50,6 +50,70 @@ def api_delete(path, payload, timeout=30):
     return _request(req, timeout)
 
 
+def benchmark_generate(model, prompt, num_predict, context=None, timeout=900):
+    """Run one streamed generation and return normalized timing metrics."""
+    options = {"num_predict": num_predict, "temperature": 0}
+    if context is not None:
+        options["num_ctx"] = context
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": True,
+        "keep_alive": "10m",
+        "options": options,
+    }
+    req = urllib.request.Request(
+        f"{OLLAMA_URL}/api/generate", data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    started = time.monotonic()
+    first_token_at = None
+    final = None
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            for raw in r:
+                if not raw.strip():
+                    continue
+                try:
+                    event = json.loads(raw)
+                except ValueError as e:
+                    raise OllamaError(f"{req.full_url} returned invalid streamed JSON: {e}")
+                if event.get("error"):
+                    raise OllamaError(str(event["error"]))
+                if first_token_at is None and (event.get("response") or event.get("thinking")):
+                    first_token_at = time.monotonic()
+                if event.get("done"):
+                    final = event
+                    break
+    except OllamaError:
+        raise
+    except urllib.error.HTTPError as e:
+        raise OllamaError(f"POST {req.full_url} -> HTTP {e.code}")
+    except Exception as e:
+        raise OllamaError(f"POST {req.full_url} failed: {e}")
+    finished = time.monotonic()
+    if final is None:
+        raise OllamaError("generation stream ended before Ollama reported completion")
+
+    def seconds(name):
+        return (final.get(name) or 0) / 1_000_000_000
+
+    def rate(count_name, duration_name):
+        duration = seconds(duration_name)
+        return (final.get(count_name) or 0) / duration if duration > 0 else None
+
+    return {
+        "prompt_tokens": final.get("prompt_eval_count") or 0,
+        "output_tokens": final.get("eval_count") or 0,
+        "prompt_tps": rate("prompt_eval_count", "prompt_eval_duration"),
+        "generation_tps": rate("eval_count", "eval_duration"),
+        "ttft_s": first_token_at - started if first_token_at is not None else None,
+        "load_s": seconds("load_duration"),
+        "total_s": seconds("total_duration"),
+        "wall_s": finished - started,
+        "done_reason": final.get("done_reason"),
+    }
+
+
 # Normalization (pure) ------------------------------------------------------
 
 def _rows(raw):
@@ -150,11 +214,23 @@ def join_library(disk, loaded_names):
 
 # Live wrappers -------------------------------------------------------------
 
-def loaded_models():
+def loaded_models(strict=False):
     try:
-        return normalize_loaded(api_get("/api/ps", timeout=5))
+        raw = api_get("/api/ps", timeout=5)
     except OllamaError:
+        if strict:
+            raise
         return []
+    if strict and (not isinstance(raw, dict) or not isinstance(raw.get("models"), list)):
+        raise OllamaError("GET /api/ps returned a malformed models payload")
+    if strict and any(
+        not isinstance(model, dict)
+        or not isinstance(model.get("name"), str)
+        or not model["name"]
+        for model in raw["models"]
+    ):
+        raise OllamaError("GET /api/ps returned a model without a valid name")
+    return normalize_loaded(raw)
 
 
 def library(loaded=None):

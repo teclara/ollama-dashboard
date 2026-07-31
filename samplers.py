@@ -33,8 +33,8 @@ from config import (
 class Sampled:
     """Thread-safe holder for one source's most recent value.
 
-    Falls back to computing synchronously on first access, so a request that
-    arrives before the first background tick gets real data rather than a hole.
+    Reads never compute. Before the first background tick callers receive the
+    configured default, keeping Ollama and subprocess work off request threads.
     """
 
     def __init__(self, fn, default=None):
@@ -43,7 +43,7 @@ class Sampled:
         self._has = False
         self._ts = 0.0
         self._lock = threading.Lock()
-        self._compute_lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
 
     def set(self, value):
         with self._lock:
@@ -51,30 +51,32 @@ class Sampled:
             self._has = True
             self._ts = time.time()
 
+    def update(self, fn):
+        """Atomically transform the latest value after any refresh completes."""
+        with self._refresh_lock:
+            with self._lock:
+                self._value = fn(self._value)
+                self._has = True
+                self._ts = time.time()
+                return self._value
+
     def peek(self):
         """Latest value without ever computing. (None, False) if never sampled."""
         with self._lock:
             return self._value, self._has
 
     def get(self):
-        value, has = self.peek()
-        if has: return value
-        # Serialize the cold-start computation so a burst of first requests
-        # does not all shell out at once.
-        with self._compute_lock:
-            value, has = self.peek()
-            if has: return value
-            self.refresh()
-            return self.peek()[0]
+        return self.peek()[0]
 
     def refresh(self):
-        try:
-            self.set(self._fn())
-        except Exception:
-            # A failing source must never kill its thread or the whole payload;
-            # the last good value (or the default) stands.
-            if not self.peek()[1]:
-                self.set(self._value)
+        with self._refresh_lock:
+            try:
+                self.set(self._fn())
+            except Exception:
+                # A failing source must never kill its thread or the whole payload;
+                # the last good value (or the default) stands.
+                if not self.peek()[1]:
+                    self.set(self._value)
 
     def age(self):
         with self._lock:
@@ -87,12 +89,23 @@ def _loop(holder, interval_sec, stop):
         stop.wait(interval_sec)
 
 
+def _dependent_loop(holder, dependencies, interval_sec, stop):
+    """Sample only after prerequisite holders have completed their first tick."""
+    while not stop.is_set():
+        if all(dependency.peek()[1] for dependency in dependencies):
+            holder.refresh()
+            stop.wait(interval_sec)
+        else:
+            stop.wait(0.1)
+
+
 # Sources, grouped by how fast they actually change --------------------------
 
 HOST = Sampled(sources.host, {})
 LOGS = Sampled(logs.read_window, [])
 LOADED = Sampled(ollama.loaded_models, [])
 GPU_PROCS = Sampled(sources.gpu_processes, [])
+GPU_VERSIONS = Sampled(sources.nvidia_versions, {})
 LIBRARY = Sampled(lambda: ollama.library(LOADED.get()), [])
 SETTINGS = Sampled(sources.settings, {})
 DISK = Sampled(lambda: sources.disk(sources.models_root(SETTINGS.get())), {})
@@ -101,7 +114,7 @@ TAILSCALE = Sampled(sources.tailscale, {})
 PING = Sampled(ollama.ping, False)
 
 # GPU is streamed rather than polled, so it gets a plain holder.
-GPU = Sampled(sources.gpu, {})
+GPU = Sampled(sources.gpu, {"error": "GPU data has not been sampled yet"})
 
 _STOP = threading.Event()
 _STARTED = threading.Event()
@@ -205,8 +218,27 @@ def model_during(start, end, intervals=None):
     """
     if intervals is None:
         intervals = residency_intervals()
-    hits = {m for (s, e, m) in intervals if s <= end and start < e}
-    return hits.pop() if len(hits) == 1 else None
+    if end < start:
+        return None
+    if start == end:
+        hits = {m for (s, e, m) in intervals if s <= start < e}
+        return hits.pop() if len(hits) == 1 else None
+
+    cursor = start
+    resident = None
+    for interval_start, interval_end, model in intervals:
+        if interval_end <= cursor:
+            continue
+        if interval_start > cursor:
+            return None
+        if resident is None:
+            resident = model
+        elif model != resident:
+            return None
+        cursor = max(cursor, interval_end)
+        if cursor >= end:
+            return resident
+    return None
 
 
 def model_at(epoch, intervals=None):
@@ -291,15 +323,18 @@ def start_all():
     schedule = [
         (LOGS, LOGS_SAMPLE_SEC),
         (GPU_PROCS, LOADED_SAMPLE_SEC),
-        (LIBRARY, SLOW_SAMPLE_SEC),
+        (GPU_VERSIONS, SLOW_SAMPLE_SEC),
         (SETTINGS, SLOW_SAMPLE_SEC),
-        (DISK, SLOW_SAMPLE_SEC),
         (SERVICE, SLOW_SAMPLE_SEC),
         (TAILSCALE, SLOW_SAMPLE_SEC),
         (PING, LOADED_SAMPLE_SEC),
     ]
     for holder, interval in schedule:
         threading.Thread(target=_loop, args=(holder, interval, _STOP),
+                         daemon=True).start()
+    for holder, dependencies in ((LIBRARY, (LOADED,)), (DISK, (SETTINGS,))):
+        threading.Thread(target=_dependent_loop,
+                         args=(holder, dependencies, SLOW_SAMPLE_SEC, _STOP),
                          daemon=True).start()
 
 

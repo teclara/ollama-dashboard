@@ -1,117 +1,71 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ollama Dashboard</title>
-<style>
-  :root{color-scheme:dark;--bg:oklch(17% .012 255);--surface:oklch(21% .014 255);--surface-raised:oklch(24% .016 255);--border:oklch(31% .018 255);--border-strong:oklch(39% .02 255);--text:oklch(92% .01 255);--dim:oklch(69% .02 255);--muted:oklch(57% .02 255);--accent:oklch(78% .12 220);--accent2:oklch(76% .1 292);--good:oklch(78% .13 150);--warn:oklch(82% .13 85);--bad:oklch(75% .15 25);--radius:10px}
-  *{box-sizing:border-box}
-  html{background:var(--bg)}
-  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-  a,button{transition:color 180ms cubic-bezier(.22,1,.36,1),border-color 180ms cubic-bezier(.22,1,.36,1),background-color 180ms cubic-bezier(.22,1,.36,1)}
-  a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-  .shell{width:min(100% - 40px,1500px);margin-inline:auto;padding:28px 0 40px}
-  .masthead{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:20px;border-bottom:1px solid var(--border)}
-  .eyebrow{margin:0 0 4px;color:var(--accent);font:600 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}
-  h1{font-size:22px;line-height:1.2;font-weight:650;letter-spacing:-.02em;margin:0}
-  .subtitle{color:var(--dim);font-size:12px;margin-top:5px}
-  nav{display:flex;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
-  nav a{color:var(--dim);text-decoration:none;font-size:12px;font-weight:600;padding:6px 10px;border-radius:5px}
-  nav a:hover{color:var(--text);background:var(--surface-raised)}
-  nav a.active{color:var(--bg);background:var(--accent)}
-  main{display:grid;gap:32px;padding-top:24px}
-  .section-head{display:flex;align-items:end;justify-content:space-between;gap:20px;margin-bottom:12px}
-  .section-head h2{font-size:16px;line-height:1.2;margin:0;font-weight:650;letter-spacing:-.01em}
-  .section-head p{margin:3px 0 0;color:var(--dim);font-size:12px}
-  .grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-  .grid-3{display:grid;grid-template-columns:minmax(220px,.75fr) minmax(0,1.35fr) minmax(0,1fr);gap:12px}
-  .card{min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
-  .card.primary{background:var(--surface-raised);border-color:var(--border-strong);padding:18px}
-  .card h3{font-size:12px;font-weight:650;margin:0 0 12px;color:var(--text)}
-  .card h3 .context{color:var(--muted);font-weight:500;margin-left:6px}
-  .table-region{overflow-x:auto;scrollbar-gutter:stable}
-  .stat{display:flex;justify-content:space-between;gap:20px;padding:7px 0;border-bottom:1px solid var(--border)}
-  .stat:last-child{border:0}
-  .stat .k{color:var(--dim)}
-  .stat .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;font-variant-numeric:tabular-nums;text-align:right}
-  /* Throttling recolours the affected value in place. Nothing is inserted or
-     removed, so the card never changes height and the page never shifts.
-     No transition here: this card is rebuilt on every refresh, so a CSS
-     transition would never get the chance to run. */
-  .stat .v.bad{color:var(--bad)}
-  .bar{height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin:8px 0}
-  .bar>div{height:100%;background:var(--accent);transition:width 200ms cubic-bezier(.22,1,.36,1)}
-  table{width:100%;min-width:560px;border-collapse:collapse;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
-  th{text-align:left;color:var(--muted);font-weight:600;padding:7px 9px;border-bottom:1px solid var(--border-strong);text-transform:uppercase;font-size:9px;letter-spacing:.1em;white-space:nowrap}
-  td{padding:8px 9px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;vertical-align:top}
-  tbody tr:hover td,table>tr:not(:first-child):hover td{background:oklch(26% .016 255)}
-  tr:last-child td{border:0}
-  td.path{color:var(--accent2)}
-  #endpoints table{min-width:0;table-layout:fixed}
-  #endpoints th:last-child,#endpoints td:last-child{width:58px;text-align:right}
-  #endpoints td.path{overflow-wrap:anywhere;word-break:break-word}
-  #activity table{min-width:0;table-layout:fixed}
-  #activity th{white-space:normal;line-height:1.3}
-  #activity th:first-child,#activity td:first-child{width:42%}
-  #activity th:not(:first-child),#activity td:not(:first-child){text-align:right}
-  #activity td.path{overflow-wrap:anywhere;word-break:break-word}
-  /* status + latency are numeric; client and model are identifiers. */
-  #reqs th:nth-child(4),#reqs td:nth-child(4),#reqs th:nth-child(5),#reqs td:nth-child(5){text-align:right}
-  #reqs td.path{overflow-wrap:anywhere;word-break:break-word}
-  .pill{display:inline-block;padding:2px 7px;border-radius:999px;font:600 10px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;white-space:nowrap}
-  .pill.good{background:oklch(30% .06 150);color:var(--good)}
-  .pill.warn{background:oklch(31% .055 85);color:var(--warn)}
-  .pill.bad{background:oklch(30% .06 25);color:var(--bad)}
-  .pill.dim{background:var(--border);color:var(--dim)}
-  .meta{color:var(--muted);font-size:11px;margin-top:10px;text-align:right}
-  .empty{color:var(--dim);padding:14px 0}
-  svg.spark{width:100%;height:72px;display:block;margin-top:4px}
-  .spark-label{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-top:8px;display:flex;justify-content:space-between}
-  .spark-label .vram{color:var(--accent)}
-  .spark-label .util{color:var(--accent2)}
-  .footer-meta{padding-top:16px;border-top:1px solid var(--border)}
-  @media(max-width:1000px){.grid-3{grid-template-columns:1fr 1fr}.grid-3>.card:first-child{grid-column:1/-1}}
-  @media(max-width:760px){.shell{width:min(100% - 24px,1500px);padding-top:16px}.masthead{align-items:flex-start;flex-direction:column}.grid-2,.grid-3{grid-template-columns:1fr}.grid-3>.card:first-child{grid-column:auto}.section-head{align-items:flex-start;flex-direction:column;gap:4px}.card,.card.primary{padding:14px}main{gap:28px}}
-  @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
-</style></head>
+<link rel="stylesheet" href="/assets/app.css"></head>
 <body>
-<div class="shell">
-  <header class="masthead">
-    <div><p class="eyebrow">Local inference</p><h1>Ollama Dashboard</h1><div class="subtitle">Live system health and inference activity</div></div>
-    <nav aria-label="Primary"><a href="/" class="active" aria-current="page">Dashboard</a><a href="/control">Control</a></nav>
+<a class="skip-link" href="#workspace-main">Skip to workspace</a>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar" data-open="false">
+    <div class="brand"><span class="brand-mark">OL</span><div><div class="brand-name">Ollama</div><div class="brand-context">Operations</div></div></div>
+    <nav class="workspace-nav" aria-label="Workspaces">
+      <div class="nav-group">Monitor</div>
+      <a href="/#overview" data-workspace-link><span class="nav-glyph">01</span>Overview</a>
+      <a href="/#activity" data-workspace-link><span class="nav-glyph">02</span>Activity</a>
+      <div class="nav-group">Operate</div>
+      <a href="/control#models" data-workspace-link><span class="nav-glyph">03</span>Models</a>
+      <a href="/control#performance" data-workspace-link><span class="nav-glyph">04</span>Performance</a>
+      <div class="nav-group">Host</div>
+      <a href="/#system" data-workspace-link><span class="nav-glyph">05</span>System</a>
+      <a href="/control#settings" data-workspace-link><span class="nav-glyph">06</span>Settings</a>
+    </nav>
+    <div class="sidebar-foot">Local server · :11434</div>
+  </aside>
+  <button class="backdrop" id="nav-backdrop" data-open="false" aria-label="Close navigation"></button>
+  <header class="topbar">
+    <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <div class="topbar-title"><h1 id="workspace-title">Overview</h1><p id="workspace-subtitle">Live operating state and work requiring attention</p></div>
+    <div class="topbar-status" aria-label="Current status">
+      <span class="status-chip" id="top-ollama">Checking Ollama</span>
+      <span class="status-chip" id="top-models">0 loaded</span>
+      <span class="status-chip" id="top-updated">Waiting for sample</span>
+    </div>
   </header>
-  <main>
-    <div id="banner"></div>
-    <section aria-labelledby="runtime-title">
-      <div class="section-head"><div><h2 id="runtime-title">Runtime</h2><p>What is loaded and ready for inference right now.</p></div></div>
-      <div class="card primary table-region"><h3>Loaded models</h3><div id="loaded"></div></div>
-    </section>
-    <section aria-labelledby="health-title">
-      <div class="section-head"><div><h2 id="health-title">System health</h2><p>Live compute, memory, host, and link pressure.</p></div></div>
-      <div class="grid-2">
-        <div class="card primary"><h3>GPU</h3><div id="gpu"></div><div id="spark"></div><div id="gpuprocs" class="table-region"></div></div>
-        <div class="card"><h3>PCIe / Oculink</h3><div id="pcie"></div></div>
+  <main class="content" id="workspace-main" tabindex="-1">
+    <div class="alert-stack" id="poll-status" role="alert"></div>
+    <div class="alert-stack" id="banner" role="alert"></div>
+    <section class="workspace" data-workspace="overview" aria-label="Overview">
+      <div class="health-strip" aria-label="Server health summary">
+        <div class="health-item"><span class="health-label">Service</span><span class="health-value" id="health-service">Checking</span><span class="health-detail" id="health-service-detail">ollama.service</span></div>
+        <div class="health-item"><span class="health-label">GPU</span><span class="health-value" id="health-gpu">Checking</span><span class="health-detail" id="health-gpu-detail">Compute and VRAM</span></div>
+        <div class="health-item"><span class="health-label">Journal</span><span class="health-value" id="health-journal">Checking</span><span class="health-detail" id="health-journal-detail">Request evidence</span></div>
+        <div class="health-item"><span class="health-label">Model store</span><span class="health-value" id="health-disk">Checking</span><span class="health-detail" id="health-disk-detail">Local storage</span></div>
+      </div>
+      <div class="workspace-grid">
+        <div class="card primary table-region span-8"><div class="card-head"><h3>Loaded models</h3><a href="/control#models" class="meta" style="margin:0">Manage models</a></div><div id="loaded"></div></div>
+        <div class="card span-4"><div class="card-head"><h3>Active work</h3><a href="/control#models" class="meta" style="margin:0">Open jobs</a></div><div id="overview-jobs"></div></div>
       </div>
     </section>
-    <section aria-labelledby="operations-title">
-      <div class="section-head"><div><h2 id="operations-title">Operations</h2><p>Service availability, storage, and private network reachability.</p></div></div>
-      <div class="grid-2"><div class="card"><h3>Service &amp; disk</h3><div id="service"></div></div><div class="card"><h3>Tailscale</h3><div id="tailscale"></div></div></div>
-    </section>
-    <section aria-labelledby="activity-title">
-      <div class="section-head"><div><h2 id="activity-title">Inference activity</h2><p>Rolling five-minute workload and request evidence.</p></div></div>
-      <div class="grid-3">
-        <div class="card"><h3>Summary <span class="context">5 min</span></h3><div id="stats"></div></div>
-        <div class="card table-region"><h3>Clients <span class="context">5 min</span></h3><div id="activity"></div></div>
-        <div class="card table-region"><h3>Top endpoints <span class="context">5 min</span></h3><div id="endpoints"></div></div>
+    <section class="workspace" data-workspace="activity" aria-label="Activity" hidden>
+      <div class="workspace-grid">
+        <div class="card span-3"><h3>Request summary <span class="context">5 min</span></h3><div id="stats"></div></div>
+        <div class="card table-region span-5"><h3>Clients <span class="context">5 min</span></h3><div id="activity"></div></div>
+        <div class="card table-region span-4"><h3>Top endpoints <span class="context">5 min</span></h3><div id="endpoints"></div></div>
+        <div class="card table-region bounded span-8"><div class="card-head"><h3>Recent requests</h3><span class="meta" id="request-freshness" style="margin:0">Waiting for journal</span></div><div id="reqs"></div></div>
+        <div class="card table-region bounded span-4"><h3>Journal problems</h3><div id="problems"></div></div>
       </div>
-      <div class="card table-region" style="margin-top:12px"><h3>Recent requests</h3><div id="reqs"></div></div>
     </section>
-    <section aria-labelledby="inventory-title">
-      <div class="section-head"><div><h2 id="inventory-title">Model inventory</h2><p>Every model available on local storage.</p></div><span class="pill dim"><span id="libcount">0</span> models</span></div>
-      <div class="card table-region"><h3>Library</h3><div id="lib"></div></div>
+    <section class="workspace" data-workspace="system" aria-label="System" hidden>
+      <div class="workspace-grid">
+        <div class="card primary span-7"><h3>GPU</h3><div id="gpu"></div><div id="spark"></div><div id="gpuprocs" class="table-region medium"></div></div>
+        <div class="card span-5"><h3>Host and PCIe / Oculink</h3><div id="pcie"></div></div>
+        <div class="card span-6"><h3>Service and storage</h3><div id="service"></div></div>
+        <div class="card span-6"><h3>Tailscale</h3><div id="tailscale"></div></div>
+      </div>
     </section>
   </main>
-  <div class="meta footer-meta">Updated <span id="now">—</span> · dashboard uptime <span id="dashup">—</span></div>
 </div>
-
+<script src="/assets/app.js"></script>
 <script>
+AppShell.init('overview');
 // Refresh cadences. The live payload is small and served from memory, so it
 // can run an order of magnitude faster than the full state.
 const LIVE_MS = 100;
@@ -132,6 +86,7 @@ function ce(tag, opts={}, children=[]){
   if(opts.cls) e.className = opts.cls;
   if(opts.text != null) e.textContent = opts.text;
   if(opts.style) e.setAttribute('style', opts.style);
+  if(opts.attrs) for(const [k,v] of Object.entries(opts.attrs)) e.setAttribute(k,v);
   for(const c of children){ if(c) e.appendChild(c); }
   return e;
 }
@@ -153,10 +108,16 @@ function row(cells){
 }
 function table(headers, rows){
   const t = document.createElement('table');
-  const thead = document.createElement('tr');
-  for(const h of headers){ const th = document.createElement('th'); th.textContent = h; thead.appendChild(th); }
-  t.appendChild(thead);
-  for(const r of rows) t.appendChild(r);
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for(const h of headers){
+    const th = document.createElement('th');
+    th.scope = 'col'; th.textContent = h; headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  const tbody = document.createElement('tbody');
+  for(const r of rows) tbody.appendChild(r);
+  t.append(thead, tbody);
   return t;
 }
 function fmtBytes(b){
@@ -181,6 +142,10 @@ function statRow(k, v, bad){
   const val = ce('span', {cls: bad ? 'v bad' : 'v', text: v==null?'—':String(v)});
   return ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:k}), val]);
 }
+function setChip(target, text, state=''){
+  target.textContent = text;
+  target.className = 'status-chip' + (state ? ' '+state : '');
+}
 
 // Throttle flags flip on and off between consecutive samples, so at a 100ms
 // refresh a raw read would strobe. Latch each reason for THROTTLE_HOLD_MS past
@@ -203,7 +168,7 @@ function sparkline(history){
   const wrap = ce('div');
   if(!history.length){ wrap.appendChild(ce('div',{cls:'empty',text:'collecting samples…'})); return wrap; }
   const W=600, H=60, pad=2;
-  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'});
+  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none','aria-hidden':'true',focusable:'false'});
   const n = Math.max(history.length, 2);
   const xStep = (W - 2*pad) / (n-1);
   function poly(getter, color, fill){
@@ -218,8 +183,8 @@ function sparkline(history){
     }
     s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
   }
-  poly(p => p.vram_pct, '#7dd3fc', true);
-  poly(p => p.util, '#a78bfa', false);
+  poly(p => p.vram_pct, 'var(--accent)', true);
+  poly(p => p.util, 'var(--accent2)', false);
   wrap.appendChild(s);
   const last = history[history.length-1];
   const lab = ce('div', {cls:'spark-label'}, [
@@ -237,7 +202,7 @@ function pcieSparkline(history, capMbs){
   const W=600, H=60, pad=2;
   const maxObserved = Math.max(...history.flatMap(p => [p.rx, p.tx]), 1);
   const scale = Math.max(maxObserved, capMbs ? capMbs * 0.1 : 0); // dynamic, but at least 10% of cap
-  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none'});
+  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none','aria-hidden':'true',focusable:'false'});
   const n = Math.max(history.length, 2);
   const xStep = (W - 2*pad) / (n-1);
   function poly(getter, color, fill){
@@ -251,13 +216,13 @@ function pcieSparkline(history, capMbs){
     }
     s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
   }
-  poly(p => p.rx, '#86efac', true);   // green = rx (host→gpu)
-  poly(p => p.tx, '#fcd34d', false);  // amber = tx (gpu→host)
+  poly(p => p.rx, 'var(--good)', true);   // green = rx (host→gpu)
+  poly(p => p.tx, 'var(--warn)', false);  // amber = tx (gpu→host)
   wrap.appendChild(s);
   const last = history[history.length-1];
   wrap.appendChild(ce('div', {cls:'spark-label'}, [
-    ce('span',{style:'color:#86efac',text:`rx ${last.rx} MB/s`}),
-    ce('span',{style:'color:#fcd34d',text:`tx ${last.tx} MB/s`}),
+    ce('span',{style:'color:var(--good)',text:`rx ${last.rx} MB/s`}),
+    ce('span',{style:'color:var(--warn)',text:`tx ${last.tx} MB/s`}),
     ce('span',{text:`peak ${maxObserved} MB/s`}),
   ]));
   return wrap;
@@ -275,12 +240,18 @@ let GPU_VERSIONS = {};
 function renderLive(s){
     // GPU
     const g = s.gpu;
-    if(g.error){ replace(el('gpu'), ce('div', {cls:'empty', text:g.error})); }
+    if(g.error){
+      replace(el('gpu'), ce('div', {cls:'empty', text:g.error}));
+      el('health-gpu').textContent = 'Unavailable';
+      el('health-gpu-detail').textContent = g.error;
+    }
     else {
       const pct = (g.mem_used/g.mem_total*100);
+      el('health-gpu').textContent = `${g.util}% util · ${fmt(pct,0)}% VRAM`;
+      el('health-gpu-detail').textContent = g.name || 'GPU sampled';
       const vbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pct}%`})]);
       const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
-      const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:#fcd34d`})]);
+      const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:var(--warn)`})]);
       const tempText = g.temp_mem == null ? `${g.temp}°C` : `${g.temp}°C (mem ${g.temp_mem}°C)`;
       const ver = GPU_VERSIONS || {};
       const driverText = (ver.driver || ver.cuda)
@@ -325,23 +296,33 @@ function renderLive(s){
     }
     replace(el('spark'), sparkline(s.gpu_history || []));
 
-    // PCIe
-    const pc = s.pcie || {};
-    const lat = pc.latest || {};
-    const negotiated = `gen ${g.pcie_gen}.0 x${g.pcie_width}`;
-    const max = `gen ${g.pcie_gen_max}.0 x${g.pcie_width_max}`;
-    // Theoretical bandwidth: gen N → ~(N*1) GB/s/lane (rough: g1=0.25, g2=0.5, g3=1, g4=2, g5=4)
-    const lanePerGen = {1:250,2:500,3:985,4:1969,5:3938};
-    const linkCap = (lanePerGen[g.pcie_gen]||0) * g.pcie_width; // MB/s
-    const linkCapMax = (lanePerGen[g.pcie_gen_max]||0) * g.pcie_width_max;
-    const totalMbs = (lat.rx_mbs||0) + (lat.tx_mbs||0);
-    const linkPct = linkCap ? Math.min(100, totalMbs/linkCap*100) : 0;
-    const totalBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${linkPct}%;background:#a78bfa`})]);
+    // PCIe link data comes from the GPU sample, so do not render a synthetic
+    // "gen undefined" link when that sample failed. Host data remains useful.
     const h = s.host || {};
-    const cpuBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.cpu_pct||0}%;background:#7dd3fc`})]);
-    const memBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.mem_pct||0}%;background:#86efac`})]);
+    const cpuBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.cpu_pct||0}%;background:var(--accent)`})]);
+    const memBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.mem_pct||0}%;background:var(--good)`})]);
     const subhead = label => ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--border)', text: label});
-    replace(el('pcie'), [
+    const hostRows = [
+      subhead('host'),
+      statRow('cpu', h.cpu_pct == null ? '—' : `${fmt(h.cpu_pct,1)}% (${h.ncpu} cores · load ${h.load_1 ?? '—'})`),
+      cpuBar,
+      statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
+      memBar,
+    ];
+    if(g.error){
+      replace(el('pcie'), [ce('div',{cls:'empty',text:'PCIe unavailable: '+g.error}), ...hostRows]);
+    } else {
+      const pc = s.pcie || {};
+      const lat = pc.latest || {};
+      const negotiated = `gen ${g.pcie_gen}.0 x${g.pcie_width}`;
+      const max = `gen ${g.pcie_gen_max}.0 x${g.pcie_width_max}`;
+      // Theoretical bandwidth: gen N → ~(N*1) GB/s/lane (rough: g1=0.25, g2=0.5, g3=1, g4=2, g5=4)
+      const lanePerGen = {1:250,2:500,3:985,4:1969,5:3938};
+      const linkCap = (lanePerGen[g.pcie_gen]||0) * g.pcie_width; // MB/s
+      const totalMbs = (lat.rx_mbs||0) + (lat.tx_mbs||0);
+      const linkPct = linkCap ? Math.min(100, totalMbs/linkCap*100) : 0;
+      const totalBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${linkPct}%;background:var(--accent2)`})]);
+      replace(el('pcie'), [
       ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:'oculink'}),
       statRow('link', negotiated + (negotiated===max ? '' : ` (max ${max})`)),
       statRow('link cap', linkCap ? `~${(linkCap/1024).toFixed(2)} GB/s` : '—'),
@@ -350,19 +331,29 @@ function renderLive(s){
       statRow('total', totalMbs + ' MB/s'),
       totalBar,
       pcieSparkline(pc.history || [], linkCap),
-      subhead('host'),
-      statRow('cpu', h.cpu_pct == null ? '—' : `${fmt(h.cpu_pct,1)}% (${h.ncpu} cores · load ${h.load_1 ?? '—'})`),
-      cpuBar,
-      statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
-      memBar,
-    ]);
+      ...hostRows,
+      ]);
+    }
 
-    el('now').textContent = s.now;
-    el('dashup').textContent = fmtUptime(s.dash_uptime_s);
+    setChip(el('top-updated'), 'Updated '+String(s.now).slice(11), 'good');
 }
 
 function renderState(s){
     GPU_VERSIONS = s.gpu_versions || {};
+    setChip(el('top-ollama'), s.ollama_ok === false ? 'Ollama unavailable' : 'Ollama connected',
+            s.ollama_ok === false ? 'bad' : 'good');
+    setChip(el('top-models'), `${s.loaded.length} loaded`, s.loaded.length ? 'good' : '');
+    const sv = s.service, dk = s.disk;
+    el('health-service').textContent = sv.active || 'unknown';
+    el('health-service-detail').textContent = sv.engine && sv.engine.version
+      ? `Ollama ${sv.engine.version} · up ${fmtUptime(sv.uptime_s)}` : 'ollama.service';
+    el('health-journal').textContent = s.log_follower_ok === false ? 'Follower stopped' : 'Following';
+    el('health-journal-detail').textContent = s.log_follower_ok === false
+      ? 'Request statistics are frozen' : 'Request evidence live';
+    el('health-disk').textContent = dk.models_size
+      ? (dk.approximate ? `≥ ${fmtBytes(dk.models_size)}` : fmtBytes(dk.models_size)) : 'Unavailable';
+    el('health-disk-detail').textContent = dk.orphan_bytes
+      ? `${fmtBytes(dk.orphan_bytes)} reclaimable` : dk.approximate ? 'Lower-bound estimate' : 'Model store';
 
     // GPU processes — its own container, so the 100ms live loop redrawing the
     // sparkline cannot wipe it between slow ticks.
@@ -380,21 +371,27 @@ function renderState(s){
     // follower would otherwise present a frozen request window as current.
     const warn = [];
     if(s.ollama_ok === false){
-      warn.push('Ollama unreachable — model panels will stay empty. Check OLLAMA_URL and `systemctl status ollama`.');
+      warn.push('Ollama is unreachable. Model data is unavailable; check OLLAMA_URL and ollama.service.');
     }
     // Keyed on the subprocess, not on silence. An idle Ollama produces no
     // lines for minutes, which is not a fault — warning on that made the
     // banner cry wolf on a perfectly healthy follower.
     if(s.log_follower_ok === false){
-      warn.push('Journal follower is not running — request statistics have stopped updating.');
+      warn.push('The journal follower is not running. Request statistics have stopped updating.');
     }
     replace(el('banner'), warn.length
-      ? ce('div',{cls:'card',style:'border-color:#fca5a5;color:#fca5a5'},
+      ? ce('div',{cls:'alert bad'},
            warn.map(t => ce('div',{text:t})))
       : null);
 
     // Loaded
-    if(!s.loaded.length){ replace(el('loaded'), ce('div', {cls:'empty', text:'no models loaded'})); }
+    if(!s.loaded.length){
+      replace(el('loaded'), ce('div', {cls:'empty'}, [
+        ce('span',{text:'No models are loaded. '}),
+        ce('a',{text:'Load a model',attrs:{href:'/control#models'}}),
+        ce('span',{text:' to begin serving requests.'}),
+      ]));
+    }
     else {
       const rows = s.loaded.map(m => {
         const caps = ce('span', {}, [
@@ -445,7 +442,6 @@ function renderState(s){
     ]);
 
     // Service
-    const sv = s.service, dk = s.disk;
     const activePill = sv.active === 'active'
       ? ce('span',{cls:'pill good',text:sv.active})
       : ce('span',{cls:'pill bad',text:sv.active});
@@ -533,72 +529,106 @@ function renderState(s){
         ['time','method','endpoint','status','latency','client','model (inferred)'], rows));
     }
 
-    // Library
-    el('libcount').textContent = s.library.length;
-    const libRows = s.library.map(m => {
-      const del = document.createElement('button');
-      del.textContent = 'Delete';
-      del.style.cssText = 'background:#222936;color:#e6e9ef;border:1px solid #2d3548;border-radius:4px;padding:3px 8px;font:inherit;font-size:10px;cursor:pointer';
-      del.onmouseenter = () => { del.style.borderColor = '#fca5a5'; del.style.color = '#fca5a5'; };
-      del.onmouseleave = () => { del.style.borderColor = '#2d3548'; del.style.color = '#e6e9ef'; };
-      del.onclick = async () => {
-        // Deletion removes files from disk with no undo, so the API demands the
-        // model key typed back verbatim rather than a yes/no confirm.
-        const typed = prompt(`Deleting ${m.model_key} removes its files from disk.\n\nType the model key exactly to confirm:`);
-        if(typed == null) return;
-        if(typed !== m.model_key){ alert('Confirmation did not match. Nothing was deleted.'); return; }
-        del.disabled = true; del.textContent = '…';
-        try{
-          const r = await fetch('/api/control/model', {method:'DELETE', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({name:m.model_key, confirm:typed})});
-          const res = await r.json();
-          if(!r.ok || !res.ok) throw new Error(res.error || 'unknown error');
-          alert('Removed:\n' + (res.removed||[]).join('\n'));
-          tick();
-        } catch(e){ alert('Delete failed: '+e.message); del.disabled = false; del.textContent = 'Delete'; }
-      };
-      const caps = ce('span', {}, [
-        m.loaded ? ce('span',{cls:'pill good',style:'margin-right:4px',text:'loaded'}) : null,
-        m.vision ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'vision'}) : null,
-        m.tools ? ce('span',{cls:'pill dim',text:'tools'}) : null,
-      ]);
-      return row([
-        m.model_key,
-        m.arch || '—',
-        m.params || '—',
-        m.quant || '—',
-        fmtBytes(m.size),
-        m.max_context ? (m.max_context/1024).toFixed(0)+'K' : '—',
-        caps,
-        del,
-      ]);
-    });
-    replace(el('lib'), table(['model','arch','params','quant','size','max ctx','',''], libRows));
-}
-
-// Each loop reschedules itself only after its own request settles, so a slow
-// or stalled response can never pile up overlapping fetches.
-function loop(url, render, intervalMs){
-  let stopped = false;
-  async function run(){
-    try{
-      const r = await fetch(url);
-      render(await r.json());
-    } catch(e){
-      el('now').textContent = 'error: ' + e.message;
+    el('request-freshness').textContent = s.log_follower_ok === false
+      ? 'Follower stopped' : s.log_age_s == null ? 'No request evidence yet'
+      : `Latest displayed request ${fmtUptime(Math.round(s.log_age_s))} ago`;
+    const problems = s.problems || [];
+    if(!problems.length){
+      replace(el('problems'), ce('div',{cls:'empty',text:'No recent warnings or errors.'}));
+    } else {
+      replace(el('problems'), table(['time','level','message'], problems.map(problem => row([
+        problem.ts || '—',
+        ce('span',{cls:'pill '+(problem.level === 'ERROR' ? 'bad' : 'warn'),text:problem.level || 'WARN'}),
+        problem.message || '—',
+      ]))));
     }
-    if(!stopped) setTimeout(run, intervalMs);
-  }
-  run();
-  // Pause while the tab is hidden — no point polling 10x/second into a
-  // background tab.
-  document.addEventListener('visibilitychange', () => {
-    if(document.hidden){ stopped = true; }
-    else if(stopped){ stopped = false; run(); }
-  });
 }
 
-loop('/api/live',  renderLive,  LIVE_MS);
-loop('/api/state', renderState, STATE_MS);
+const POLL_ERRORS = {live:null, state:null, jobs:null};
+function setPollError(name, message){
+  POLL_ERRORS[name] = message;
+  const errors = Object.entries(POLL_ERRORS).filter(([,value]) => value);
+  replace(el('poll-status'), errors.length
+    ? ce('div',{cls:'alert bad'},
+        errors.map(([stream, value]) => ce('div',{text:`${stream} polling failed: ${value}`})))
+    : null);
+}
+
+function renderOverviewJobs(jobs){
+  const entries = Object.entries(jobs).sort((a,b) => (b[1].started||0) - (a[1].started||0));
+  const active = entries.filter(([,job]) => !job.done);
+  const failed = entries.filter(([,job]) => job.error);
+  const visible = [...active, ...failed.filter(item => !active.includes(item))].slice(0,4);
+  if(!visible.length){
+    replace(el('overview-jobs'), ce('div',{cls:'empty',text:'No active or failed jobs.'}));
+    return;
+  }
+  replace(el('overview-jobs'), table(['job','kind','state'], visible.map(([name, job]) => row([
+    job.kind === 'benchmark' ? 'Benchmark suite' : name,
+    job.kind,
+    ce('span',{cls:'pill '+(job.error ? 'bad' : 'warn'),text:job.error ? 'failed' : job.status}),
+  ]))));
+}
+
+// One timer, request, and generation per stream prevents overlap and ignores
+// responses invalidated when polling pauses in a hidden tab.
+function pollStream(name, url, render, intervalMs){
+  let timer = null, request = null, generation = 0, pending = false;
+  function schedule(delay){
+    if(document.hidden || timer !== null || request) return;
+    timer = setTimeout(run, delay);
+  }
+  async function run(){
+    timer = null;
+    if(document.hidden) return;
+    if(request){ pending = true; return; }
+    const current = ++generation;
+    const controller = new AbortController();
+    request = controller;
+    try{
+      const r = await fetch(url, {signal:controller.signal});
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      if(current !== generation) return;
+      render(data);
+      setPollError(name, null);
+    } catch(e){
+      if(current === generation && e.name !== 'AbortError') setPollError(name, e.message);
+    } finally {
+      if(request === controller) request = null;
+      if(current !== generation){
+        if(pending && !document.hidden){ pending = false; schedule(0); }
+        return;
+      }
+      const delay = pending ? 0 : intervalMs;
+      pending = false;
+      schedule(delay);
+    }
+  }
+  return {
+    start(){ schedule(0); },
+    refresh(){
+      if(document.hidden) return;
+      if(request){ pending = true; generation++; request.abort(); }
+      else { if(timer !== null){ clearTimeout(timer); timer = null; } schedule(0); }
+    },
+    pause(){
+      pending = false;
+      generation++;
+      if(timer !== null){ clearTimeout(timer); timer = null; }
+      if(request) request.abort();
+    },
+    resume(){ if(request) pending = true; else schedule(0); },
+  };
+}
+
+const livePoll = pollStream('live', '/api/live', renderLive, LIVE_MS);
+const statePoll = pollStream('state', '/api/state', renderState, STATE_MS);
+const jobsPoll = pollStream('jobs', '/api/control/jobs', renderOverviewJobs, 1000);
+const POLLERS = [livePoll, statePoll, jobsPoll];
+document.addEventListener('visibilitychange', () => {
+  for(const poller of POLLERS) document.hidden ? poller.pause() : poller.resume();
+});
+for(const poller of POLLERS) poller.start();
 </script>
 </body></html>

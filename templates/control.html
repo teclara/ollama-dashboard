@@ -1,121 +1,91 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ollama Control</title>
-<style>
-  :root{color-scheme:dark;--bg:oklch(17% .012 255);--surface:oklch(21% .014 255);--surface-raised:oklch(24% .016 255);--border:oklch(31% .018 255);--border-strong:oklch(39% .02 255);--text:oklch(92% .01 255);--dim:oklch(69% .02 255);--muted:oklch(57% .02 255);--accent:oklch(78% .12 220);--accent2:oklch(76% .1 292);--good:oklch(78% .13 150);--warn:oklch(82% .13 85);--bad:oklch(75% .15 25);--radius:10px}
-  *{box-sizing:border-box}
-  html{background:var(--bg)}
-  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-  a,button,input,select,textarea{transition:color 180ms cubic-bezier(.22,1,.36,1),border-color 180ms cubic-bezier(.22,1,.36,1),background-color 180ms cubic-bezier(.22,1,.36,1)}
-  a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .shell{width:min(100% - 40px,1500px);margin-inline:auto;padding:28px 0 40px}
-  .masthead{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;padding-bottom:20px;border-bottom:1px solid var(--border)}
-  .eyebrow{margin:0 0 4px;color:var(--accent2);font:600 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}
-  h1{font-size:22px;line-height:1.2;font-weight:650;letter-spacing:-.02em;margin:0}
-  .subtitle{color:var(--dim);font-size:12px;margin-top:5px}
-  nav{display:flex;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
-  nav a{color:var(--dim);text-decoration:none;font-size:12px;font-weight:600;padding:6px 10px;border-radius:5px}
-  nav a:hover{color:var(--text);background:var(--surface-raised)}
-  nav a.active{color:var(--bg);background:var(--accent2)}
-  main{display:grid;gap:32px;padding-top:24px}
-  .section-head{margin-bottom:12px}
-  .section-head h2{font-size:16px;line-height:1.2;margin:0;font-weight:650;letter-spacing:-.01em}
-  .section-head p{margin:3px 0 0;color:var(--dim);font-size:12px}
-  .grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
-  .card{min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
-  .card.primary{background:var(--surface-raised);border-color:var(--border-strong);padding:18px}
-  .card h3{font-size:12px;font-weight:650;margin:0 0 12px;color:var(--text)}
-  .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
-  .card-head h3{margin:0}
-  .table-region{overflow-x:auto;scrollbar-gutter:stable}
-  table{width:100%;min-width:560px;border-collapse:collapse;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
-  th{text-align:left;color:var(--muted);font-weight:600;padding:7px 9px;border-bottom:1px solid var(--border-strong);text-transform:uppercase;font-size:9px;letter-spacing:.1em;white-space:nowrap}
-  td{padding:8px 9px;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums;vertical-align:middle}
-  tbody tr:hover td,table>tr:not(:first-child):hover td{background:oklch(26% .016 255)}
-  tr:last-child td{border:0}
-  .pill{display:inline-block;padding:2px 7px;border-radius:999px;font:600 10px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;white-space:nowrap}
-  .pill.good{background:oklch(30% .06 150);color:var(--good)}
-  .pill.warn{background:oklch(31% .055 85);color:var(--warn)}
-  .pill.bad{background:oklch(30% .06 25);color:var(--bad)}
-  .pill.dim{background:var(--border);color:var(--dim)}
-  button{min-height:32px;background:var(--surface-raised);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:5px 11px;font:600 11px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;cursor:pointer}
-  button:hover{border-color:var(--accent2);color:var(--accent2)}
-  button.danger:hover{border-color:var(--bad);color:var(--bad)}
-  button.primary{background:var(--accent2);color:var(--bg);border-color:var(--accent2)}
-  button.primary:hover{background:oklch(82% .1 292);color:var(--bg)}
-  button:disabled{opacity:.4;cursor:not-allowed}
-  input,select,textarea{min-height:36px;background:var(--bg);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:7px 10px;font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace}
-  input:focus,select:focus,textarea:focus{border-color:var(--accent2)}
-  input::placeholder,textarea::placeholder{color:var(--muted)}
-  textarea{width:100%;min-height:80px;font-family:ui-monospace,monospace}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .row > *{flex-shrink:0}
-  .grow{flex:1;min-width:200px}
-  .bar{height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin:8px 0}
-  .bar>div{height:100%;background:var(--accent2);transition:width 200ms cubic-bezier(.22,1,.36,1)}
-  .empty{color:var(--dim);padding:14px 0}
-  .meta{color:var(--muted);font-size:11px;margin-top:8px}
-  pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:11px;overflow-x:auto;white-space:pre-wrap;word-break:break-word}
-  pre.thinking{color:var(--dim);max-height:200px;overflow-y:auto}
-  pre.content{color:var(--text)}
-  .stat{display:inline-block;margin:0 20px 10px 0}
-  .stat .k{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.1em}
-  .stat .v{font-variant-numeric:tabular-nums;font-weight:600}
-  .suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-  .suggestions button{font-size:10px;padding:3px 8px}
-  .opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:8px}
-  .opts label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.08em}
-  .opts input,.opts select{width:100%}
-  @media(max-width:820px){.shell{width:min(100% - 24px,1500px);padding-top:16px}.masthead{align-items:flex-start;flex-direction:column}.grid-2{grid-template-columns:1fr}.card,.card.primary{padding:14px}main{gap:28px}.row>*{flex:1 1 auto}.row>.grow{flex-basis:100%}}
-  @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
-</style></head>
+<link rel="stylesheet" href="/assets/app.css"></head>
 <body>
-<div class="shell">
-  <header class="masthead">
-    <div><p class="eyebrow">Model operations</p><h1>Ollama Control</h1><div class="subtitle">Load, acquire, and manage local models</div></div>
-    <nav aria-label="Primary"><a href="/">Dashboard</a><a href="/control" class="active" aria-current="page">Control</a></nav>
+<a class="skip-link" href="#workspace-main">Skip to workspace</a>
+<div class="app-shell">
+  <aside class="sidebar" id="sidebar" data-open="false">
+    <div class="brand"><span class="brand-mark">OL</span><div><div class="brand-name">Ollama</div><div class="brand-context">Operations</div></div></div>
+    <nav class="workspace-nav" aria-label="Workspaces">
+      <div class="nav-group">Monitor</div>
+      <a href="/#overview" data-workspace-link><span class="nav-glyph">01</span>Overview</a>
+      <a href="/#activity" data-workspace-link><span class="nav-glyph">02</span>Activity</a>
+      <div class="nav-group">Operate</div>
+      <a href="/control#models" data-workspace-link><span class="nav-glyph">03</span>Models</a>
+      <a href="/control#performance" data-workspace-link><span class="nav-glyph">04</span>Performance</a>
+      <div class="nav-group">Host</div>
+      <a href="/#system" data-workspace-link><span class="nav-glyph">05</span>System</a>
+      <a href="/control#settings" data-workspace-link><span class="nav-glyph">06</span>Settings</a>
+    </nav>
+    <div class="sidebar-foot">Local server · :11434</div>
+  </aside>
+  <button class="backdrop" id="nav-backdrop" data-open="false" aria-label="Close navigation"></button>
+  <header class="topbar">
+    <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
+    <div class="topbar-title"><h1 id="workspace-title">Models</h1><p id="workspace-subtitle">Load, acquire, inspect, and remove local models</p></div>
+    <div class="topbar-status" aria-label="Current status">
+      <span class="status-chip" id="top-ollama">Checking Ollama</span>
+      <span class="status-chip" id="top-models">0 loaded</span>
+      <span class="status-chip" id="top-jobs">No active jobs</span>
+    </div>
   </header>
-  <main>
-    <section aria-labelledby="active-title">
-      <div class="section-head"><h2 id="active-title">Active work</h2><p>Loaded runtimes and background operations requiring attention.</p></div>
-      <div class="grid-2">
-        <div class="card primary table-region"><div class="card-head"><h3>Loaded models</h3><button id="unload-all" class="danger">Unload all</button></div><div id="loaded"></div></div>
-        <div class="card primary"><div class="card-head"><h3>Jobs <span id="jobs-summary" class="meta" style="margin-left:8px">—</span></h3><button id="jobs-clear">Clear finished</button></div><div id="jobs-view"></div></div>
-      </div>
-    </section>
-    <section aria-labelledby="operate-title">
-      <div class="section-head"><h2 id="operate-title">Operate</h2><p>Load a model with explicit context and GPU-layer settings.</p></div>
-      <div>
-        <div class="card"><h3>Load model</h3>
-          <div class="row" style="margin-bottom:10px"><select id="load-model" class="grow" aria-label="Model to load"></select><button id="fit-btn">Check fit</button><button class="primary" id="load-btn">Load</button></div>
+  <main class="content" id="workspace-main" tabindex="-1">
+    <div class="alert-stack" id="poll-status" role="alert"></div>
+    <div class="alert-stack" id="ollama-status" role="alert"></div>
+    <section class="workspace" data-workspace="models" aria-label="Models">
+      <div class="workspace-grid">
+        <div class="card primary table-region span-7"><div class="card-head"><h3>Loaded models</h3><button id="unload-all" class="danger" data-ollama-control>Unload all</button></div><div id="loaded"></div></div>
+        <div class="card span-5"><div class="card-head"><h3>Jobs <span id="jobs-summary" class="meta" style="margin-left:8px">No jobs</span></h3><button id="jobs-clear">Clear finished</button></div><div id="jobs-view" class="table-region medium"></div></div>
+        <div class="card span-5"><h3>Load model</h3>
+          <div class="row" style="margin-bottom:10px"><select id="load-model" class="grow" aria-label="Model to load" data-ollama-control></select><button id="fit-btn" data-ollama-control>Check fit</button><button class="primary" id="load-btn" data-ollama-control>Load</button></div>
           <div class="opts">
-            <label>num_ctx<input id="load-ctx" type="number" min="1" placeholder="server default"></label>
-            <label>num_gpu<input id="load-gpu" type="number" min="0" placeholder="all layers"></label>
-            <label>keep_alive<input id="load-ttl" placeholder="e.g. 30m"></label>
+            <label>num_ctx<input id="load-ctx" type="number" min="1" placeholder="server default" data-ollama-control></label>
+            <label>num_gpu<input id="load-gpu" type="number" min="0" placeholder="all layers" data-ollama-control></label>
+            <label>keep_alive<input id="load-ttl" placeholder="e.g. 30m" data-ollama-control></label>
           </div>
-          <div id="fit-out"></div>
-          <div id="server-opts" class="meta" style="text-align:left"></div>
-          <div class="meta">Load progress appears under Active work.</div>
+          <div id="fit-out"></div><div id="server-opts" class="meta"></div>
         </div>
+        <div class="card span-7"><div class="card-head"><h3>Acquire model</h3><span class="meta" style="margin:0">Catalog <span id="cat-age">not loaded</span></span></div>
+          <div class="row" style="margin-bottom:10px"><input id="dl-name" class="grow" aria-label="Model identifier" placeholder="Model name, e.g. llama3.1:8b" data-ollama-control><button class="primary" id="dl-btn" data-ollama-control>Download</button></div>
+          <div class="row" style="margin-bottom:10px"><input id="cat-search" class="grow" aria-label="Filter model catalog" placeholder="Filter catalog by name, capability, or size"><button id="cat-refresh">Refresh catalog</button></div>
+          <div id="cat-status" class="meta" hidden></div><div id="catalog" class="catalog-list"></div>
+        </div>
+        <div class="card table-region bounded span-12"><div class="card-head"><h3>Local inventory</h3><span class="meta" id="inventory-count" style="margin:0">0 models</span></div><div id="library"></div></div>
       </div>
     </section>
-    <section aria-labelledby="inventory-title">
-      <div class="section-head"><h2 id="inventory-title">Local inventory</h2><p>Models currently stored on this machine. Delete removes the model from the server.</p></div>
-      <div class="card table-region"><h3>Local models</h3><div id="library"></div></div>
-    </section>
-    <section aria-labelledby="acquire-title">
-      <div class="section-head"><h2 id="acquire-title">Acquire models</h2><p>Browse ollama.com/library or pull a known model name directly.</p></div>
-      <div class="grid-2">
-        <div class="card"><div class="card-head"><h3>Browse catalog</h3><span class="meta">Cached <span id="cat-age">—</span></span></div><div class="row" style="margin-bottom:10px"><input id="cat-search" class="grow" aria-label="Filter model catalog" placeholder="Filter by name or size, e.g. 8b"><button id="cat-refresh">Refresh</button></div><div id="catalog" style="max-height:520px;overflow-y:auto"></div></div>
-        <div class="card"><h3>Download model</h3><div class="row"><input id="dl-name" class="grow" aria-label="Model identifier" placeholder="Model name, e.g. llama3.1:8b"><button class="primary" id="dl-btn">Download</button></div><div class="meta">Download progress appears under Active work.</div></div>
+    <section class="workspace" data-workspace="performance" aria-label="Performance" hidden>
+      <div class="workspace-grid">
+        <div class="card span-5"><h3>Benchmark setup</h3>
+          <div class="field-label" id="bench-model-label">Completion models</div>
+          <div id="bench-model" class="selection-list" role="group" aria-labelledby="bench-model-label" aria-describedby="bench-model-help"></div>
+          <div class="row" style="margin:8px 0 12px"><button id="bench-all" data-ollama-control>Select all</button><button id="bench-none">Clear</button></div>
+          <label for="bench-prompt" class="field-label">Prompt</label>
+          <textarea id="bench-prompt" data-ollama-control>Explain why both latency and throughput matter when evaluating a local language model. Be concrete and concise.</textarea>
+          <div class="opts" style="margin-top:10px">
+            <label>Warm-ups<input id="bench-warmups" type="number" min="0" max="5" value="1" data-ollama-control></label>
+            <label>Measured runs<input id="bench-runs" type="number" min="1" max="10" value="3" data-ollama-control></label>
+            <label>Output tokens<input id="bench-tokens" type="number" min="1" max="2048" value="128" data-ollama-control></label>
+            <label>num_ctx<input id="bench-context" type="number" min="1" placeholder="server default" data-ollama-control></label>
+          </div>
+          <div class="row"><button class="primary" id="bench-start" data-ollama-control>Run benchmark</button><span id="bench-message" class="meta" role="status"></span></div>
+          <div id="bench-model-help" class="meta">Runs are sequential. Avoid other Ollama traffic while testing. Resident models may affect placement; embedding models use a different workload and are excluded.</div>
+        </div>
+        <div class="card primary span-7"><div class="card-head"><h3>Results</h3><span class="meta" style="margin:0">Medians, with per-run evidence</span></div><div id="benchmark-results"></div></div>
       </div>
     </section>
-    <section aria-labelledby="settings-title">
-      <div class="section-head"><h2 id="settings-title">Configuration</h2><p>Read-only view of ollama.service's environment.</p></div>
-      <div class="card table-region"><h3>Server environment</h3><div id="config"></div></div>
+    <section class="workspace" data-workspace="settings" aria-label="Settings" hidden>
+      <div class="card table-region bounded"><div class="card-head"><h3>Ollama service environment</h3><span class="meta" style="margin:0">Read only · secrets redacted</span></div><div id="config"></div></div>
     </section>
   </main>
 </div>
+<dialog id="delete-dialog" aria-labelledby="delete-title">
+  <div class="dialog-head"><h2 id="delete-title">Delete model</h2></div>
+  <div class="dialog-body"><p id="delete-copy"></p><label class="field-label">Type the model name to confirm<input id="delete-input" autocomplete="off"></label><div id="delete-status" class="meta" role="status"></div></div>
+  <div class="dialog-actions"><button id="delete-cancel">Cancel</button><button id="delete-confirm" class="danger" disabled>Delete model</button></div>
+</dialog>
+<script src="/assets/app.js"></script>
 <script>
+AppShell.init('models');
 const el = id => document.getElementById(id);
 function ce(tag, opts={}, children=[]){
   const e = document.createElement(tag);
@@ -126,6 +96,16 @@ function ce(tag, opts={}, children=[]){
   for(const c of children){ if(c) e.appendChild(c); }
   return e;
 }
+function makeTable(headers){
+  const table = ce('table');
+  const head = ce('thead');
+  const headRow = ce('tr');
+  for(const label of headers) headRow.appendChild(ce('th',{text:label,attrs:{scope:'col'}}));
+  head.appendChild(headRow);
+  table.append(head, ce('tbody'));
+  return table;
+}
+function addTableRow(table, row){ table.tBodies[0].appendChild(row); }
 function fmtBytes(b){
   if(!b) return '—';
   const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024 && i<u.length-1){b/=1024;i++;}
@@ -137,8 +117,8 @@ function fmtSecs(s){
   if(s < 3600) return Math.floor(s/60)+'m '+Math.round(s%60)+'s';
   return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
 }
-async function api(method, path, body){
-  const r = await fetch(path, {method, headers:body?{'Content-Type':'application/json'}:undefined, body:body?JSON.stringify(body):undefined});
+async function api(method, path, body, signal){
+  const r = await fetch(path, {method, signal, headers:body?{'Content-Type':'application/json'}:undefined, body:body?JSON.stringify(body):undefined});
   const text = await r.text();
   let data; try{ data = JSON.parse(text); } catch(e){ data = null; }
   if(!r.ok){
@@ -146,26 +126,63 @@ async function api(method, path, body){
   }
   return data;
 }
+function setChip(target, text, state=''){
+  target.textContent = text;
+  target.className = 'status-chip' + (state ? ' '+state : '');
+}
+
+const POLL_ERRORS = {state:null, jobs:null};
+function setPollError(name, message){
+  POLL_ERRORS[name] = message;
+  const errors = Object.entries(POLL_ERRORS).filter(([,value]) => value);
+  el('poll-status').replaceChildren(...(errors.length
+    ? [ce('div',{cls:'alert bad'},
+        errors.map(([stream, value]) => ce('div',{text:`${stream} polling failed: ${value}`})))]
+    : []));
+}
+
+let ollamaAvailable = true;
+function setOllamaAvailable(available){
+  ollamaAvailable = available;
+  el('ollama-status').replaceChildren(...(available ? [] : [
+    ce('div',{cls:'alert bad',
+      text:'Ollama is unreachable. Operational controls are disabled until it recovers.'})
+  ]));
+  for(const control of document.querySelectorAll('[data-ollama-control]')){
+    if(!available && !control.disabled){
+      control.dataset.disabledByAvailability = 'true';
+      control.disabled = true;
+    } else if(available && control.dataset.disabledByAvailability){
+      delete control.dataset.disabledByAvailability;
+      control.disabled = false;
+    }
+  }
+}
 
 // Loaded models + library ---------------------------------------------------
 
-async function refresh(){
-  try{
-    const s = await api('GET', '/api/state');
+let statePoll, jobsPoll;
+let benchmarkModelsInitialized = false;
+
+function renderState(s){
+    setChip(el('top-ollama'), s.ollama_ok === false ? 'Ollama unavailable' : 'Ollama connected',
+            s.ollama_ok === false ? 'bad' : 'good');
+    setChip(el('top-models'), `${s.loaded.length} loaded`, s.loaded.length ? 'good' : '');
 
     // Loaded models. Ollama identifies a loaded model by its name; there is no
     // separate instance identifier the way LM Studio had.
-    if(!s.loaded.length){ el('loaded').replaceChildren(ce('div',{cls:'empty',text:'no models loaded'})); }
-    else {
-      const t = ce('table');
-      t.appendChild(ce('tr',{},['model','placement','ctx','ttl',''].map(h=>ce('th',{text:h}))));
+    if(!el('loaded').contains(document.activeElement) && !s.loaded.length){
+      el('loaded').replaceChildren(ce('div',{cls:'empty',text:'No models are loaded. Use the load controls below to start one.'}));
+    } else if(!el('loaded').contains(document.activeElement)) {
+      const t = makeTable(['model','placement','ctx','ttl','actions']);
       for(const m of s.loaded){
-        const btn = ce('button', {cls:'danger', text:'Unload'});
+        const btn = ce('button', {cls:'danger', text:'Unload', attrs:{
+          'data-ollama-control':'','aria-label':'Unload '+m.model_key}});
         btn.onclick = async () => {
           btn.disabled=true;
           try{ await api('POST','/api/control/unload',{model:m.model_key}); }
           catch(e){ alert(e.message); btn.disabled=false; }
-          refresh();
+          statePoll.refresh();
         };
         const ctx = m.context ? `${(m.context/1024).toFixed(0)}K` : '—';
         const row = ce('tr',{},[
@@ -179,43 +196,61 @@ async function refresh(){
           ce('td'),
         ]);
         row.lastChild.replaceChildren(btn);
-        t.appendChild(row);
+        addTableRow(t, row);
       }
       el('loaded').replaceChildren(t);
     }
 
-    // Local models
-    const t = ce('table');
-    t.appendChild(ce('tr',{},['model','arch','params','quant','size','max ctx','',''].map(h=>ce('th',{text:h}))));
-    const lsel = el('load-model');
-    const lcur = lsel.value;
-    lsel.replaceChildren();
-    for(const m of s.library){
-      const actions = ce('td');
-      const del = ce('button',{cls:'danger',text:'Delete'});
-      del.onclick = () => confirmDelete(actions, del, m);
-      actions.replaceChildren(del);
-      const caps = ce('td');
-      for(const [flag,label] of [['vision','vision'],['tools','tools'],
-                                 ['thinking','thinking'],['embedding','embed']]){
-        if(m[flag]) caps.appendChild(ce('span',{cls:'pill dim',text:label,style:'margin-right:4px'}));
+    // Do not replace the inventory while a typed confirmation or focused row
+    // control is active. Polling can resume rendering it once interaction ends.
+    if(!el('library').contains(document.activeElement)
+       && !el('bench-model').contains(document.activeElement)){
+      const t = makeTable(['model','arch','params','quant','size','max ctx','capabilities','actions']);
+      const lsel = el('load-model');
+      const lcur = lsel.value;
+      const bsel = el('bench-model');
+      const bcur = new Set(Array.from(bsel.querySelectorAll('input:checked'), input => input.value));
+      lsel.replaceChildren();
+      bsel.replaceChildren();
+      for(const m of s.library){
+        const actions = ce('td');
+        const del = ce('button',{cls:'danger',text:'Delete',attrs:{
+          'data-ollama-control':'','aria-label':'Delete '+m.model_key}});
+        del.onclick = () => openDelete(m, del);
+        actions.replaceChildren(del);
+        const caps = ce('td');
+        for(const [flag,label] of [['vision','vision'],['tools','tools'],
+                                   ['thinking','thinking'],['embedding','embed']]){
+          if(m[flag]) caps.appendChild(ce('span',{cls:'pill dim',text:label,style:'margin-right:4px'}));
+        }
+        const row = ce('tr',{},[
+          ce('td',{text:m.model_key}),
+          ce('td',{text:m.arch||'—'}),
+          ce('td',{text:m.params||'—'}),
+          ce('td',{text:m.quant||'—'}),
+          ce('td',{text:fmtBytes(m.size)}),
+          ce('td',{text:m.max_context ? (m.max_context/1024).toFixed(0)+'K' : '—'}),
+          caps,
+          actions,
+        ]);
+        if(m.loaded) row.firstChild.appendChild(ce('span',{cls:'pill good',text:'loaded',style:'margin-left:6px'}));
+        addTableRow(t, row);
+        lsel.appendChild(ce('option',{text:m.model_key,attrs:{value:m.model_key}}));
+        const check = ce('input',{attrs:{type:'checkbox',value:m.model_key}});
+        check.disabled = !!m.embedding;
+        check.checked = !m.embedding && bcur.has(m.model_key);
+        bsel.appendChild(ce('label',{cls:'selection-option'},[
+          check, ce('span',{text:m.model_key + (m.embedding ? ' · embedding' : '')})]));
       }
-      const row = ce('tr',{},[
-        ce('td',{text:m.model_key}),
-        ce('td',{text:m.arch||'—'}),
-        ce('td',{text:m.params||'—'}),
-        ce('td',{text:m.quant||'—'}),
-        ce('td',{text:fmtBytes(m.size)}),
-        ce('td',{text:m.max_context ? (m.max_context/1024).toFixed(0)+'K' : '—'}),
-        caps,
-        actions,
-      ]);
-      if(m.loaded) row.firstChild.appendChild(ce('span',{cls:'pill good',text:'loaded',style:'margin-left:6px'}));
-      t.appendChild(row);
-      lsel.appendChild(ce('option',{text:m.model_key,attrs:{value:m.model_key}}));
+      el('library').replaceChildren(t);
+      el('inventory-count').textContent = `${s.library.length} models`;
+      if(lcur && Array.from(lsel.options).some(o=>o.value===lcur)) lsel.value = lcur;
+      if(!benchmarkModelsInitialized){
+        const first = bsel.querySelector('input:not(:disabled)');
+        if(first) first.checked = true;
+        benchmarkModelsInitialized = true;
+      }
     }
-    el('library').replaceChildren(t);
-    if(lcur && Array.from(lsel.options).some(o=>o.value===lcur)) lsel.value = lcur;
 
     // Server environment. The key set is not fixed — a user may add any
     // OLLAMA_* variable — so this renders whatever arrived. Secret-shaped
@@ -223,13 +258,12 @@ async function refresh(){
     const cfg = s.settings || {};
     if(cfg.error){ el('config').replaceChildren(ce('div',{cls:'empty',text:'settings: '+cfg.error})); }
     else {
-      const ct = ce('table');
-      ct.appendChild(ce('tr',{},['variable','value'].map(h=>ce('th',{text:h}))));
+      const ct = makeTable(['variable','value']);
       const keys = Object.keys(cfg).filter(k => k.startsWith('OLLAMA_')).sort();
-      if(!keys.length) ct.appendChild(ce('tr',{},[ce('td',{text:'—'}),ce('td',{text:'no OLLAMA_* variables set'})]));
+      if(!keys.length) addTableRow(ct, ce('tr',{},[ce('td',{text:'—'}),ce('td',{text:'no OLLAMA_* variables set'})]));
       for(const k of keys){
-        ct.appendChild(ce('tr',{},[
-          ce('td',{text:k}), ce('td',{text:String(cfg[k]),style:'color:#a78bfa'})]));
+        addTableRow(ct, ce('tr',{},[
+          ce('td',{text:k}), ce('td',{text:String(cfg[k]),style:'color:var(--accent2)'})]));
       }
       el('config').replaceChildren(ct, ce('div',{cls:'meta',text:'systemd unit: '+(cfg.unit||'—')}));
       // Settings that exist server-wide and have no per-load equivalent, shown
@@ -240,33 +274,52 @@ async function refresh(){
         so.textContent = `server-wide: num_parallel=${par ?? 'default'}, max_loaded=${max ?? 'default'}`;
       }
     }
-  } catch(e){ console.error(e); }
+
+    setOllamaAvailable(s.ollama_ok !== false);
 }
 
-// Deleting removes files from disk with no undo, so the model key must be
-// typed back verbatim; the confirm button stays disabled until it matches.
-function confirmDelete(cell, delBtn, m){
-  const input = ce('input',{attrs:{placeholder:'type '+m.model_key}, style:'font-size:11px;width:220px'});
-  const ok = ce('button',{cls:'danger',text:'Confirm delete'});
-  ok.disabled = true;
-  const cancel = ce('button',{text:'Cancel'});
-  input.oninput = () => { ok.disabled = input.value !== m.model_key; };
-  cancel.onclick = () => { cell.replaceChildren(delBtn, ce('span',{text:' '}), ce('button',{text:'Test'})); refresh(); };
-  ok.onclick = async () => {
-    ok.disabled = true; ok.textContent = 'deleting…';
-    try{
-      const res = await api('DELETE','/api/control/model',{name:m.model_key, confirm:input.value});
-      alert('Removed:\n' + (res.removed||[]).join('\n'));
-      refresh();
-    } catch(e){ alert('Delete failed: '+e.message); ok.textContent = 'Confirm delete'; ok.disabled = false; }
-  };
-  cell.replaceChildren(input, ce('span',{text:' '}), ok, ce('span',{text:' '}), cancel);
-  input.focus();
+// Deleting removes files with no undo. A focused dialog keeps the wide model
+// table stable while preserving the exact-name confirmation guard.
+let pendingDelete = null;
+function openDelete(model, trigger){
+  pendingDelete = {model, trigger};
+  el('delete-copy').textContent = `Deleting ${model.model_key} removes its files from this Ollama server.`;
+  el('delete-input').value = '';
+  el('delete-status').textContent = '';
+  el('delete-confirm').disabled = true;
+  el('delete-confirm').textContent = 'Delete model';
+  el('delete-dialog').showModal();
+  el('delete-input').focus();
 }
+el('delete-input').oninput = () => {
+  el('delete-confirm').disabled = !pendingDelete ||
+    el('delete-input').value !== pendingDelete.model.model_key;
+};
+el('delete-cancel').onclick = () => el('delete-dialog').close();
+el('delete-dialog').addEventListener('close', () => {
+  if(pendingDelete && pendingDelete.trigger.isConnected) pendingDelete.trigger.focus();
+  pendingDelete = null;
+});
+el('delete-confirm').onclick = async () => {
+  if(!pendingDelete) return;
+  const {model} = pendingDelete;
+  const confirmButton = el('delete-confirm');
+  confirmButton.disabled = true;
+  confirmButton.textContent = 'Deleting…';
+  try{
+    await api('DELETE','/api/control/model',{name:model.model_key,confirm:el('delete-input').value});
+    el('delete-dialog').close();
+    statePoll.refresh();
+  } catch(e){
+    el('delete-status').textContent = 'Delete failed: '+e.message;
+    confirmButton.textContent = 'Delete model';
+    confirmButton.disabled = el('delete-input').value !== model.model_key;
+  }
+};
 
 el('unload-all').onclick = async () => {
   if(!confirm('Unload all loaded models?')) return;
-  try{ await api('POST','/api/control/unload',{all:true}); refresh(); }
+  try{ await api('POST','/api/control/unload',{all:true}); statePoll.refresh(); }
   catch(e){ alert(e.message); }
 };
 
@@ -278,11 +331,73 @@ function fmtRate(bps){
   if(bps < 1024*1024) return (bps/1024).toFixed(0)+' KB/s';
   return (bps/(1024*1024)).toFixed(1)+' MB/s';
 }
-async function refreshJobs(){
-  try{
-    const jobs = await api('GET','/api/control/jobs');
+const BENCHMARK_KEY = 'benchmark:suite';
+function fmtMetric(value, suffix, digits=1){
+  return value == null ? '—' : Number(value).toFixed(digits)+suffix;
+}
+function renderBenchmark(p){
+  const wrap = el('benchmark-results');
+  const active = !!(p && !p.done);
+  el('bench-start').disabled = active || !ollamaAvailable;
+  el('bench-start').textContent = active ? 'Benchmark running…' : 'Run benchmark';
+  if(!p){
+    wrap.replaceChildren(ce('div',{cls:'empty',text:'Select a completion model and run the benchmark to compare latency and throughput.'}));
+    return;
+  }
+  const children = [];
+  const state = p.error ? 'failed' : p.done ? 'finished' : p.status;
+  const stateClass = p.error ? 'bad' : p.done ? 'good' : 'warn';
+  const statusText = active
+    ? `${p.current_model || 'preparing'} · model ${p.model_index || 0}/${p.model_total || 0} · ${p.last_line || p.status}`
+    : p.last_line || p.error || state;
+  children.push(ce('div',{style:'display:flex;justify-content:space-between;gap:8px;align-items:center'},[
+    ce('span',{cls:'pill '+stateClass,text:state}),
+    ce('span',{cls:'meta',text:statusText,style:'margin:0;text-align:right'}),
+  ]));
+  if(active && p.pct != null){
+    children.push(ce('div',{cls:'bar'},[ce('div',{style:`width:${p.pct}%`})]));
+    children.push(ce('div',{cls:'meta',text:p.pct.toFixed(1)+'% complete',style:'text-align:left'}));
+  }
+  const results = p.results || [];
+  if(results.length){
+    const t = makeTable(['model','status','output tok/s','prompt tok/s','TTFT','total']);
+    for(const result of results){
+      addTableRow(t, ce('tr',{},[
+        ce('td',{text:result.model}),
+        ce('td',{},[ce('span',{cls:'pill '+(result.status==='failed'?'bad':'good'),text:result.status})]),
+        ce('td',{text:fmtMetric(result.generation_tps,'')}),
+        ce('td',{text:fmtMetric(result.prompt_tps,'')}),
+        ce('td',{text:fmtMetric(result.ttft_s == null ? null : result.ttft_s*1000,' ms',0)}),
+        ce('td',{text:fmtMetric(result.total_s,' s',2)}),
+      ]));
+    }
+    children.push(ce('div',{cls:'table-region',style:'margin-top:12px'},[t]));
+    for(const result of results){
+      const details = ce('details');
+      details.appendChild(ce('summary',{text:result.status === 'failed'
+        ? `${result.model}: ${result.error}` : `${result.model}: per-run evidence`}));
+      if((result.runs||[]).length){
+        const rt = makeTable(['run','output tok/s','prompt tok/s','TTFT','load','wall','tokens']);
+        for(const run of result.runs) addTableRow(rt, ce('tr',{},[
+          ce('td',{text:String(run.run)}),
+          ce('td',{text:fmtMetric(run.generation_tps,'')}),
+          ce('td',{text:fmtMetric(run.prompt_tps,'')}),
+          ce('td',{text:fmtMetric(run.ttft_s == null ? null : run.ttft_s*1000,' ms',0)}),
+          ce('td',{text:fmtMetric(run.load_s,' s',2)}),
+          ce('td',{text:fmtMetric(run.wall_s,' s',2)}),
+          ce('td',{text:String(run.output_tokens ?? '—')}),
+        ]));
+        details.appendChild(ce('div',{cls:'table-region'},[rt]));
+      }
+      children.push(details);
+    }
+  }
+  wrap.replaceChildren(...children);
+}
+function renderJobs(jobs){
     const wrap = el('jobs-view');
     const entries = Object.entries(jobs).sort((a,b) => (b[1].started||0) - (a[1].started||0));
+    renderBenchmark(jobs[BENCHMARK_KEY]);
 
     let active = 0, done = 0, errored = 0;
     for(const [,p] of entries){
@@ -290,6 +405,9 @@ async function refreshJobs(){
     }
     el('jobs-summary').textContent = entries.length
       ? `${active} active · ${done} done · ${errored} errors` : '— no jobs';
+    setChip(el('top-jobs'), active ? `${active} active job${active===1?'':'s'}`
+      : errored ? `${errored} job error${errored===1?'':'s'}` : 'No active jobs',
+      active ? 'warn' : errored ? 'bad' : 'good');
 
     if(!entries.length){
       wrap.replaceChildren(ce('div',{cls:'empty',text:'no jobs — start a load or download below'}));
@@ -297,42 +415,38 @@ async function refreshJobs(){
     }
     wrap.replaceChildren();
     for(const [name, p] of entries){
-      const border = p.error ? '#5c2828' : p.done ? '#1f4a2f' : '#3d3a18';
-      const bg = p.error ? 'rgba(252,165,165,.05)' : p.done ? 'rgba(134,239,172,.05)' : 'rgba(252,211,77,.05)';
-      const card = ce('div', {style:`border:1px solid ${border};border-radius:6px;padding:10px;margin-bottom:8px;background:${bg}`});
+      const card = ce('div', {cls:'job-item'});
       const pill = p.error ? ce('span',{cls:'pill bad',text:'error'})
                  : p.done  ? ce('span',{cls:'pill good',text:'done'})
-                           : ce('span',{cls:'pill warn',text:p.kind === 'load' ? 'loading' : 'downloading'});
-      card.appendChild(ce('div',{style:'display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px'},[
-        ce('span',{text:name,style:'color:var(--accent2);font-weight:600;font-size:13px'}),
+                            : ce('span',{cls:'pill warn',text:p.kind === 'load' ? 'loading' : p.kind === 'download' ? 'downloading' : 'benchmarking'});
+      card.appendChild(ce('div',{cls:'job-head'},[
+        ce('span',{cls:'job-title',text:p.kind === 'benchmark' ? 'Benchmark suite' : name}),
         ce('span',{},[ce('span',{cls:'pill dim',text:p.kind,style:'margin-right:6px'}), pill]),
       ]));
-      card.appendChild(ce('div',{text:p.error || p.last_line || p.status || '—',
-                                style:'font-size:11px;color:var(--dim);margin-bottom:6px;word-break:break-word'}));
+      card.appendChild(ce('div',{cls:'job-line',text:p.error || p.last_line || p.status || '—'}));
 
-      // Pull phases like "pulling manifest" and "verifying sha256 digest" carry
-      // no byte counts, so show a bar only when a real percentage or byte pair
-      // exists; otherwise the status line above stands in.
-      const pct = p.total ? (p.completed/p.total*100) : (p.pct != null ? p.pct : null);
-      if(pct != null && !p.done){
-        card.appendChild(ce('div',{cls:'bar',style:'margin:6px 0'},[ce('div',{style:`width:${pct}%`})]));
-        const bits = [
-          ce('span',{},[ce('span',{text:'progress ',style:'color:var(--dim)'}), ce('span',{text:pct.toFixed(1)+'%',style:'color:var(--text)'})]),
-        ];
+      // A pull can retain byte/rate telemetry while its model-wide percentage
+      // is indeterminate. Only the percentage controls the bar and label.
+      const pct = p.pct;
+      if(!p.done){
+        const bits = [];
+        if(pct != null){
+          card.appendChild(ce('div',{cls:'bar',style:'margin:6px 0'},[ce('div',{style:`width:${pct}%`})]));
+          bits.push(ce('span',{},[ce('span',{text:'progress ',style:'color:var(--dim)'}), ce('span',{text:pct.toFixed(1)+'%',style:'color:var(--text)'})]));
+        }
         if(p.total) bits.push(ce('span',{},[ce('span',{text:'transferred ',style:'color:var(--dim)'}),
           ce('span',{text:`${fmtBytes(p.completed)} / ${fmtBytes(p.total)}`,style:'color:var(--text)'})]));
         if(p.rate_bps) bits.push(ce('span',{},[ce('span',{text:'rate ',style:'color:var(--dim)'}),
           ce('span',{text:fmtRate(p.rate_bps),style:'color:var(--accent)'})]));
-        if(p.eta) bits.push(ce('span',{},[ce('span',{text:'eta ',style:'color:var(--dim)'}),
-          ce('span',{text:p.eta,style:'color:var(--text)'})]));
-        card.appendChild(ce('div',{style:'display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums'}, bits));
+        if(p.eta_s != null) bits.push(ce('span',{},[ce('span',{text:'eta ',style:'color:var(--dim)'}),
+          ce('span',{text:fmtSecs(p.eta_s),style:'color:var(--text)'})]));
+        if(bits.length) card.appendChild(ce('div',{cls:'job-metrics'}, bits));
       }
       wrap.appendChild(card);
     }
-  } catch(e){}
 }
 el('jobs-clear').onclick = async () => {
-  try{ await api('POST','/api/control/jobs/clear',{}); refreshJobs(); } catch(e){ alert(e.message); }
+  try{ await api('POST','/api/control/jobs/clear',{}); jobsPoll.refresh(); } catch(e){ alert(e.message); }
 };
 
 // Load ----------------------------------------------------------------------
@@ -342,10 +456,14 @@ function loadOpts(){
   return {model: el('load-model').value, context: v('load-ctx'),
           gpu: v('load-gpu'), ttl: v('load-ttl')};
 }
+function loadInputsValid(){
+  return el('load-ctx').reportValidity() && el('load-gpu').reportValidity();
+}
 // Not an estimate: Ollama has no equivalent of `lms load --estimate-only`.
 // This compares the model's on-disk size to free VRAM and ignores KV cache
 // and context, so it is labelled a fit check rather than a prediction.
 el('fit-btn').onclick = async () => {
+  if(!loadInputsValid()) return;
   const out = el('fit-out');
   out.replaceChildren(ce('div',{cls:'empty',text:'checking…'}));
   try{
@@ -360,16 +478,53 @@ el('fit-btn').onclick = async () => {
   } catch(e){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message})); }
 };
 el('load-btn').onclick = async () => {
+  if(!loadInputsValid()) return;
   try{
     const r = await api('POST','/api/control/load', loadOpts());
-    if(!r.started) alert('A job for this model is already running.');
-    refreshJobs();
+    if(!r.started) alert('The job was not started. It may already be active, or the active-job limit has been reached.');
+    jobsPoll.refresh();
   } catch(e){ alert(e.message); }
+};
+
+// Benchmark -----------------------------------------------------------------
+
+el('bench-all').onclick = () => {
+  for(const input of el('bench-model').querySelectorAll('input')) input.checked = !input.disabled;
+};
+el('bench-none').onclick = () => {
+  for(const input of el('bench-model').querySelectorAll('input')) input.checked = false;
+};
+el('bench-start').onclick = async () => {
+  const ids = ['bench-warmups','bench-runs','bench-tokens','bench-context'];
+  if(!ids.every(id => el(id).reportValidity())) return;
+  const models = Array.from(el('bench-model').querySelectorAll('input:checked'), input => input.value);
+  const message = el('bench-message');
+  if(!models.length){ message.textContent = 'Select at least one completion model.'; return; }
+  const prompt = el('bench-prompt').value.trim();
+  if(!prompt){ message.textContent = 'Enter a benchmark prompt.'; return; }
+  const context = el('bench-context').value.trim();
+  el('bench-start').disabled = true;
+  message.textContent = 'Starting…';
+  try{
+    const result = await api('POST','/api/control/benchmark',{
+      models, prompt,
+      warmups:Number(el('bench-warmups').value),
+      runs:Number(el('bench-runs').value),
+      num_predict:Number(el('bench-tokens').value),
+      context:context === '' ? null : Number(context),
+    });
+    message.textContent = result.started ? 'Benchmark queued.' : 'Another benchmark or model job is active.';
+    if(!result.started) el('bench-start').disabled = false;
+    jobsPoll.refresh();
+  } catch(e){
+    message.textContent = 'Could not start: '+e.message;
+    el('bench-start').disabled = false;
+  }
 };
 
 // Catalog -------------------------------------------------------------------
 
-let CAT_DATA = [];
+let CAT_DATA = [], CAT_ERROR = null;
 function useName(name){
   el('dl-name').value = name;
   el('dl-name').scrollIntoView({block:'center'});
@@ -384,17 +539,21 @@ function renderCatalog(){
     return q.split(/\s+/).every(t => hay.includes(t));
   });
   const wrap = el('catalog');
-  if(!items.length){ wrap.replaceChildren(ce('div',{cls:'empty',text:'no matches'})); return; }
+  if(!items.length){
+    const message = CAT_DATA.length ? 'no matches'
+      : CAT_ERROR ? 'no catalog data available' : 'catalog is empty';
+    wrap.replaceChildren(ce('div',{cls:'empty',text:message}));
+    return;
+  }
   wrap.replaceChildren();
   for(const m of items){
-    const card = ce('div', {style:'border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px;align-items:center'});
-    const left = ce('div',{style:'flex:1;min-width:0'});
-    left.appendChild(ce('div',{text:m.name,style:'color:var(--accent2);font-weight:600;font-size:13px'}));
+    const card = ce('div', {cls:'catalog-item'});
+    const left = ce('div',{cls:'catalog-copy'});
+    left.appendChild(ce('div',{cls:'catalog-title',text:m.name}));
     if(m.description){
-      left.appendChild(ce('div',{text:m.description,
-        style:'color:var(--dim);font-size:11px;margin-top:2px'}));
+      left.appendChild(ce('div',{cls:'catalog-description',text:m.description}));
     }
-    const tags = ce('div',{style:'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px'});
+    const tags = ce('div',{cls:'catalog-tags'});
     // Capabilities first, then parameter sizes: the sizes are what you click
     // through to a concrete tag, the capabilities are what you filter on.
     for(const c of (m.capabilities||[])) tags.appendChild(ce('span',{cls:'pill good',text:c}));
@@ -415,11 +574,19 @@ async function refreshCatalog(force=false){
   try{
     const r = await api('GET', '/api/control/catalog' + (force?'?refresh=1':''));
     CAT_DATA = r.data || [];
+    CAT_ERROR = r.error || null;
+    el('cat-status').textContent = CAT_ERROR ? 'Catalog refresh failed: '+CAT_ERROR : '';
+    el('cat-status').style.color = CAT_ERROR ? 'var(--bad)' : '';
+    el('cat-status').hidden = !CAT_ERROR;
     el('cat-age').textContent = r.cached_age_s != null
       ? (r.cached_age_s === 0 ? 'fresh' : `${Math.round(r.cached_age_s/60)}m old`) : '—';
     renderCatalog();
   } catch(e){
-    el('catalog').replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message}));
+    CAT_ERROR = e.message;
+    el('cat-status').textContent = 'Catalog request failed: '+CAT_ERROR;
+    el('cat-status').style.color = 'var(--bad)';
+    el('cat-status').hidden = false;
+    renderCatalog();
   }
 }
 el('cat-search').oninput = renderCatalog;
@@ -433,13 +600,68 @@ el('dl-btn').onclick = async () => {
   if(!name) return;
   try{
     const r = await api('POST','/api/control/download',{name});
-    if(!r.started) alert('A job for this name is already running.');
+    if(!r.started) alert('The job was not started. It may already be active, or the active-job limit has been reached.');
     el('dl-name').value = '';
-    refreshJobs();
+    jobsPoll.refresh();
   } catch(e){ alert(e.message); }
 };
 
-refresh(); setInterval(refresh, 3000);
-refreshJobs(); setInterval(refreshJobs, 1000);
+// One timer, request, and generation per stream prevents overlap and ignores
+// responses invalidated when polling pauses in a hidden tab.
+function pollStream(name, fetcher, render, intervalMs){
+  let timer = null, request = null, generation = 0, pending = false;
+  function schedule(delay){
+    if(document.hidden || timer !== null || request) return;
+    timer = setTimeout(run, delay);
+  }
+  async function run(){
+    timer = null;
+    if(document.hidden) return;
+    if(request){ pending = true; return; }
+    const current = ++generation;
+    const controller = new AbortController();
+    request = controller;
+    try{
+      const data = await fetcher(controller.signal);
+      if(current !== generation) return;
+      render(data);
+      setPollError(name, null);
+    } catch(e){
+      if(current === generation && e.name !== 'AbortError') setPollError(name, e.message);
+    } finally {
+      if(request === controller) request = null;
+      if(current !== generation){
+        if(pending && !document.hidden){ pending = false; schedule(0); }
+        return;
+      }
+      const delay = pending ? 0 : intervalMs;
+      pending = false;
+      schedule(delay);
+    }
+  }
+  return {
+    start(){ schedule(0); },
+    refresh(){
+      if(document.hidden) return;
+      if(request){ pending = true; generation++; request.abort(); }
+      else { if(timer !== null){ clearTimeout(timer); timer = null; } schedule(0); }
+    },
+    pause(){
+      pending = false;
+      generation++;
+      if(timer !== null){ clearTimeout(timer); timer = null; }
+      if(request) request.abort();
+    },
+    resume(){ if(request) pending = true; else schedule(0); },
+  };
+}
+
+statePoll = pollStream('state', signal => api('GET','/api/state',null,signal), renderState, 3000);
+jobsPoll = pollStream('jobs', signal => api('GET','/api/control/jobs',null,signal), renderJobs, 1000);
+const POLLERS = [statePoll, jobsPoll];
+document.addEventListener('visibilitychange', () => {
+  for(const poller of POLLERS) document.hidden ? poller.pause() : poller.resume();
+});
+for(const poller of POLLERS) poller.start();
 </script>
 </body></html>

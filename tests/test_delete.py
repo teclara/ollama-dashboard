@@ -10,6 +10,9 @@ class TestDeleteModel(unittest.TestCase):
     resolution, path containment checks, and rmtree are all gone. What must
     survive is the confirmation guard and the refusal to delete a loaded model."""
 
+    def setUp(self):
+        control.clear_all_jobs()
+
     def test_confirmation_must_match_exactly(self):
         for confirm in ("gemma4", None, "", "gemma4:12B"):
             with self.subTest(confirm=confirm):
@@ -55,6 +58,41 @@ class TestDeleteModel(unittest.TestCase):
             out = control.delete_model("nope:1", "nope:1")
         self.assertFalse(out["ok"])
         self.assertIn("HTTP 404", out["error"])
+
+    def test_refuses_to_delete_when_loaded_state_cannot_be_verified(self):
+        with mock.patch("control.ollama.loaded_models",
+                        side_effect=ollama.OllamaError("connection refused")), \
+             mock.patch("control.ollama.api_delete") as api:
+            out = control.delete_model("gemma4:12b", "gemma4:12b")
+        self.assertFalse(out["ok"])
+        self.assertIn("verify", out["error"])
+        api.assert_not_called()
+
+    def test_strict_loaded_check_rejects_malformed_payload(self):
+        with mock.patch("ollama.api_get", return_value={}), \
+             mock.patch("control.ollama.api_delete") as api:
+            out = control.delete_model("gemma4:12b", "gemma4:12b")
+        self.assertFalse(out["ok"])
+        self.assertIn("verify", out["error"])
+        api.assert_not_called()
+
+    def test_strict_loaded_check_rejects_model_without_name(self):
+        with mock.patch("ollama.api_get", return_value={"models": [{}]}), \
+             mock.patch("control.ollama.api_delete") as api:
+            out = control.delete_model("gemma4:12b", "gemma4:12b")
+        self.assertFalse(out["ok"])
+        self.assertIn("verify", out["error"])
+        api.assert_not_called()
+
+    def test_benchmark_blocks_delete_before_live_checks(self):
+        control._claim_job(control._BENCHMARK_KEY, "benchmark")
+        with mock.patch("control.ollama.loaded_models") as loaded, \
+             mock.patch("control.ollama.api_delete") as api:
+            out = control.delete_model("gemma4:12b", "gemma4:12b")
+        self.assertFalse(out["ok"])
+        self.assertIn("benchmark", out["error"])
+        loaded.assert_not_called()
+        api.assert_not_called()
 
 
 if __name__ == "__main__":

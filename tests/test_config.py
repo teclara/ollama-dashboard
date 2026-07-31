@@ -41,6 +41,18 @@ class TestConfig(unittest.TestCase):
     def test_bad_int_falls_back_to_default(self):
         self.assertEqual(self._fresh(OLLAMA_DASHBOARD_PORT="not-a-number").PORT, 11435)
 
+    def test_out_of_range_port_falls_back_to_default(self):
+        self.assertEqual(self._fresh(OLLAMA_DASHBOARD_PORT="0").PORT, 11435)
+        self.assertEqual(self._fresh(OLLAMA_DASHBOARD_PORT="70000").PORT, 11435)
+
+    def test_nonpositive_sampling_interval_falls_back_to_default(self):
+        c = self._fresh(OLLAMA_DASHBOARD_LOADED_SAMPLE_SEC="0")
+        self.assertEqual(c.LOADED_SAMPLE_SEC, 2)
+
+    def test_negative_buffer_length_falls_back_to_default(self):
+        c = self._fresh(OLLAMA_DASHBOARD_LOG_WINDOW_LINES="-1")
+        self.assertEqual(c.LOG_WINDOW_LINES, 2000)
+
     def test_models_dir_reads_ollamas_own_var(self):
         c = self._fresh(OLLAMA_MODELS="/mnt/big/models")
         self.assertEqual(c.MODELS_DIR_FALLBACK, "/mnt/big/models")

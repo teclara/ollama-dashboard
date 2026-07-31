@@ -1,4 +1,4 @@
-import unittest
+import json, unittest
 from unittest import mock
 
 import ollama
@@ -124,6 +124,46 @@ class TestLiveWrappers(unittest.TestCase):
         with mock.patch("ollama.api_get", return_value=tags):
             out = ollama.library(loaded=[{"model_key": "a:1"}])
         self.assertTrue(out[0]["loaded"])
+
+
+class TestBenchmarkGenerate(unittest.TestCase):
+    class Response:
+        def __init__(self, events):
+            self.lines = [json.dumps(event).encode() + b"\n" for event in events]
+
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def __iter__(self): return iter(self.lines)
+
+    def test_normalizes_streamed_generate_metrics(self):
+        response = self.Response([
+            {"model": "m", "response": "Hello", "done": False},
+            {"model": "m", "response": "", "done": True,
+             "done_reason": "length", "total_duration": 4_000_000_000,
+             "load_duration": 100_000_000, "prompt_eval_count": 20,
+             "prompt_eval_duration": 500_000_000, "eval_count": 30,
+             "eval_duration": 3_000_000_000},
+        ])
+        with mock.patch("ollama.urllib.request.urlopen", return_value=response) as open_url, \
+             mock.patch("ollama.time.monotonic", side_effect=[10.0, 10.75, 14.2]):
+            out = ollama.benchmark_generate("m", "prompt", 30, 8192)
+        payload = json.loads(open_url.call_args[0][0].data)
+        self.assertTrue(payload["stream"])
+        self.assertEqual(payload["options"]["num_ctx"], 8192)
+        self.assertEqual(payload["options"]["num_predict"], 30)
+        self.assertEqual(out["prompt_tokens"], 20)
+        self.assertEqual(out["output_tokens"], 30)
+        self.assertAlmostEqual(out["prompt_tps"], 40.0)
+        self.assertAlmostEqual(out["generation_tps"], 10.0)
+        self.assertAlmostEqual(out["ttft_s"], 0.75)
+        self.assertAlmostEqual(out["load_s"], 0.1)
+        self.assertAlmostEqual(out["wall_s"], 4.2)
+
+    def test_requires_terminal_done_event(self):
+        response = self.Response([{"response": "partial", "done": False}])
+        with mock.patch("ollama.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(ollama.OllamaError, "before Ollama reported"):
+                ollama.benchmark_generate("m", "prompt", 10)
 
 
 if __name__ == "__main__":
