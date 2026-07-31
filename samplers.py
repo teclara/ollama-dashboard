@@ -1,27 +1,32 @@
 """Background sampling layer.
 
-The request path must never shell out. Every `lms` invocation costs roughly
-200ms of Node startup, and a single aggregate call used to spend ~840ms of its
-~935ms in subprocess spawns — which capped the whole dashboard at about 1.4 Hz
-no matter what the browser's poll interval was set to.
+The request path never touches Ollama. Under LM Studio the reason was latency:
+every `lms` invocation cost ~200ms of Node startup. Ollama's HTTP API is orders
+of magnitude faster, so that argument no longer applies — but two others do,
+and they are why this layer survived the port:
 
-So each source is sampled by a background thread on its own cadence and the
-latest value is held in memory. `state()` and `live()` then just read those
-values, which makes them effectively free and lets the UI refresh as fast as it
-likes. It also stops the dashboard from flooding LM Studio's own logs with the
-polling traffic it is trying to report on.
+1. Polling from the request path would flood the GIN access log, which is
+   exactly the data the dashboard exists to display. Every dashboard poll would
+   appear as a logged, timed, client-attributed request, crowding out the real
+   traffic. logs.is_noise filters what does leak through, but not generating it
+   is better.
+2. `du -sb` over a 60+ GB model store must never block a response.
+
+Each source is sampled by a background thread on its own cadence and the latest
+value is held in memory, so state() and live() are effectively free.
 
 GPU samples come from a single long-lived `nvidia-smi --loop-ms` process rather
-than one spawn per tick, the same trick the PCIe monitor already used.
+than one spawn per tick.
 """
 import subprocess, threading, time
+from collections import deque
 
-import lmstudio
 import logs
+import ollama
 import sources
 from config import (
     GPU_SAMPLE_MS, HOST_SAMPLE_MS, LOADED_SAMPLE_SEC, LOGS_SAMPLE_SEC,
-    SLOW_SAMPLE_SEC,
+    PS_TIMELINE_LEN, SLOW_SAMPLE_SEC,
 )
 
 
@@ -86,19 +91,64 @@ def _loop(holder, interval_sec, stop):
 
 HOST = Sampled(sources.host, {})
 LOGS = Sampled(logs.read_window, [])
-LOADED = Sampled(lmstudio.loaded_models, [])
+LOADED = Sampled(ollama.loaded_models, [])
 GPU_PROCS = Sampled(sources.gpu_processes, [])
-LIBRARY = Sampled(lambda: lmstudio.library(LOADED.get()), [])
+LIBRARY = Sampled(lambda: ollama.library(LOADED.get()), [])
 SETTINGS = Sampled(sources.settings, {})
 DISK = Sampled(lambda: sources.disk(sources.models_root(SETTINGS.get())), {})
 SERVICE = Sampled(sources.service_info, {})
 TAILSCALE = Sampled(sources.tailscale, {})
+PING = Sampled(ollama.ping, False)
 
 # GPU is streamed rather than polled, so it gets a plain holder.
 GPU = Sampled(sources.gpu, {})
 
 _STOP = threading.Event()
 _STARTED = threading.Event()
+
+
+# Loaded-model timeline ------------------------------------------------------
+#
+# GIN access lines carry no model name, and the only place the journal names a
+# model is by weights-blob SHA, which does not match the manifest digest in
+# /api/tags. So attribution is inferred: record which model was resident at
+# each /api/ps sample, then map request timestamps onto that.
+#
+# Exact under OLLAMA_MAX_LOADED_MODELS=1. Above that we record None rather than
+# picking one, so attribution degrades to "unknown" instead of to a wrong
+# answer. Anything rendering row["model"] must label it inferred, not observed.
+
+MODEL_TIMELINE = deque(maxlen=PS_TIMELINE_LEN)
+_TIMELINE_LOCK = threading.Lock()
+
+
+def record_timeline(loaded, now=None):
+    now = time.time() if now is None else now
+    keys = [m.get("model_key") for m in (loaded or []) if m.get("model_key")]
+    resident = keys[0] if len(keys) == 1 else None
+    with _TIMELINE_LOCK:
+        MODEL_TIMELINE.append((now, resident))
+
+
+def model_at(epoch):
+    """Which model was resident at `epoch`, or None if unknown or ambiguous."""
+    with _TIMELINE_LOCK:
+        snapshot = list(MODEL_TIMELINE)
+    found = None
+    for ts, model in snapshot:
+        if ts <= epoch:
+            found = model
+        else:
+            break
+    return found
+
+
+def attribute(rows):
+    """Tag request rows with the model that was resident when they arrived."""
+    for r in rows:
+        if r.get("kind") == "request":
+            r["model"] = model_at(r.get("epoch", 0))
+    return rows
 
 
 def _gpu_stream_loop():
@@ -141,23 +191,33 @@ def _host_loop():
         _STOP.wait(interval)
 
 
+def _loaded_loop():
+    """Sample /api/ps and record what was resident, on one cadence."""
+    while not _STOP.is_set():
+        LOADED.refresh()
+        record_timeline(LOADED.peek()[0] or [])
+        _STOP.wait(LOADED_SAMPLE_SEC)
+
+
 def start_all():
     """Launch every sampler. Idempotent."""
     if _STARTED.is_set(): return
     _STARTED.set()
 
+    logs.start_follower()
     threading.Thread(target=_gpu_stream_loop, daemon=True).start()
     threading.Thread(target=_host_loop, daemon=True).start()
+    threading.Thread(target=_loaded_loop, daemon=True).start()
 
     schedule = [
         (LOGS, LOGS_SAMPLE_SEC),
-        (LOADED, LOADED_SAMPLE_SEC),
         (GPU_PROCS, LOADED_SAMPLE_SEC),
         (LIBRARY, SLOW_SAMPLE_SEC),
         (SETTINGS, SLOW_SAMPLE_SEC),
         (DISK, SLOW_SAMPLE_SEC),
         (SERVICE, SLOW_SAMPLE_SEC),
         (TAILSCALE, SLOW_SAMPLE_SEC),
+        (PING, LOADED_SAMPLE_SEC),
     ]
     for holder, interval in schedule:
         threading.Thread(target=_loop, args=(holder, interval, _STOP),
@@ -166,5 +226,6 @@ def start_all():
 
 def stop_all():
     """Used by tests; the server itself runs until killed."""
+    logs.stop_follower()
     _STOP.set()
     _STARTED.clear()

@@ -147,5 +147,54 @@ class TestLivePayload(unittest.TestCase):
             self.assertNotIn(k, live)
 
 
+class TestModelTimeline(unittest.TestCase):
+    def setUp(self):
+        samplers.MODEL_TIMELINE.clear()
+
+    def tearDown(self):
+        samplers.MODEL_TIMELINE.clear()
+
+    def test_records_the_resident_model(self):
+        samplers.record_timeline([{"model_key": "gemma4:31b"}], now=100.0)
+        self.assertEqual(samplers.model_at(100.0), "gemma4:31b")
+
+    def test_records_none_when_nothing_is_loaded(self):
+        samplers.record_timeline([], now=100.0)
+        self.assertIsNone(samplers.model_at(100.0))
+
+    def test_lookup_uses_the_most_recent_observation_at_or_before(self):
+        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
+        samplers.record_timeline([{"model_key": "b:1"}], now=200.0)
+        self.assertEqual(samplers.model_at(150.0), "a:1")
+        self.assertEqual(samplers.model_at(250.0), "b:1")
+
+    def test_request_before_any_observation_is_unattributed(self):
+        samplers.record_timeline([{"model_key": "a:1"}], now=200.0)
+        self.assertIsNone(samplers.model_at(100.0))
+
+    def test_multiple_loaded_models_is_ambiguous_not_a_guess(self):
+        # With MAX_LOADED_MODELS>1 we cannot know which one served a request.
+        # Returning the first would be a confident lie.
+        samplers.record_timeline([{"model_key": "a:1"}, {"model_key": "b:1"}],
+                                 now=100.0)
+        self.assertIsNone(samplers.model_at(100.0))
+
+    def test_timeline_is_bounded(self):
+        for i in range(samplers.PS_TIMELINE_LEN + 100):
+            samplers.record_timeline([{"model_key": "a:1"}], now=float(i))
+        self.assertEqual(len(samplers.MODEL_TIMELINE), samplers.PS_TIMELINE_LEN)
+
+    def test_attribute_tags_rows_in_place(self):
+        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
+        rows = [{"kind": "request", "epoch": 150.0, "model": None}]
+        out = samplers.attribute(rows)
+        self.assertEqual(out[0]["model"], "a:1")
+
+    def test_attribute_leaves_problems_alone(self):
+        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
+        rows = [{"kind": "problem", "epoch": 150.0, "model": None}]
+        self.assertIsNone(samplers.attribute(rows)[0]["model"])
+
+
 if __name__ == "__main__":
     unittest.main()
