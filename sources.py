@@ -4,10 +4,10 @@ from collections import deque
 from datetime import datetime
 
 import logs
-import lmstudio
+import ollama
 from config import (
-    GPU_HISTORY_LEN, HISTORY_INTERVAL_SEC, LMS_BIN, MODELS_DIR_FALLBACK,
-    PCIE_HISTORY_LEN, SETTINGS_PATH, SYSTEMD_UNIT, SYSTEMD_USER,
+    GPU_HISTORY_LEN, HISTORY_INTERVAL_SEC, MODELS_DIR_FALLBACK,
+    PCIE_HISTORY_LEN, SYSTEMD_UNIT, SYSTEMD_USER,
 )
 
 START = time.time()
@@ -106,44 +106,133 @@ def gpu_processes():
 
 
 # Settings and on-disk model store ------------------------------------------
+#
+# Ollama has no settings file. Its configuration is the systemd unit's
+# environment, which is also where this machine's real tuning lives
+# (KV_CACHE_TYPE, FLASH_ATTENTION, MAX_LOADED_MODELS).
 
-# Only these keys are ever exposed. settings.json also holds hfSearchToken and
-# hfDownloadToken; nothing outside this list may reach a response body.
-_SETTINGS_WHITELIST = ("downloadsFolder", "defaultContextLength",
-                       "modelLoadingGuardrails", "enableLocalService", "useHFProxy")
+# A denylist, not a whitelist. Under LM Studio we could enumerate the settings
+# worth exposing; here the user may add any OLLAMA_* variable at any time, so
+# anything secret-shaped is redacted and everything else passes through.
+_SECRET_RE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL", re.I)
+
+_ENV_TOKEN_RE = re.compile(r'"([^"]*)"|(\S+)')
 
 
-def settings(path=None):
-    path = path or SETTINGS_PATH
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception as e:
-        return {"path": path, "error": str(e)}
-    out = {"path": path}
-    out.update({k: raw[k] for k in _SETTINGS_WHITELIST if k in raw})
+def parse_systemd_environment(text):
+    """`systemctl show <unit> --property=Environment` -> {name: value}.
+
+    systemd emits one space-separated line and quotes only the values that
+    need it, e.g. `OLLAMA_HOST=http://0.0.0.0:11434 "OLLAMA_ORIGINS=*"`.
+    """
+    out = {}
+    for line in (text or "").splitlines():
+        if not line.startswith("Environment="):
+            continue
+        for quoted, bare in _ENV_TOKEN_RE.findall(line[len("Environment="):]):
+            token = quoted or bare
+            name, sep, value = token.partition("=")
+            if not sep or not name.startswith("OLLAMA_"):
+                continue
+            out[name] = "<redacted>" if _SECRET_RE.search(name) else value
     return out
 
 
+def settings():
+    try:
+        raw = _systemctl("show", SYSTEMD_UNIT, "--property=Environment")
+    except Exception as e:
+        return {"unit": SYSTEMD_UNIT, "error": str(e)}
+    env = parse_systemd_environment(raw)
+    return {"unit": SYSTEMD_UNIT, **env}
+
+
 def models_root(settings_dict):
-    return (settings_dict or {}).get("downloadsFolder") or MODELS_DIR_FALLBACK
+    return (settings_dict or {}).get("OLLAMA_MODELS") or MODELS_DIR_FALLBACK
+
+
+def _statvfs_walk_up(root):
+    """statvfs on `root`, walking toward / past unreadable ancestors.
+
+    /usr/share/ollama is 0750 ollama:ollama, so a dashboard process outside
+    that group cannot stat the model dir. Any ancestor on the same mount
+    reports identical filesystem totals.
+    """
+    path = os.path.abspath(root)
+    while True:
+        try:
+            return os.statvfs(path)
+        except OSError:
+            parent = os.path.dirname(path)
+            if parent == path:
+                return None
+            path = parent
+
+
+def _du(root):
+    """Exact bytes via `du -sb`, or None when not permitted."""
+    try:
+        return int(subprocess.check_output(
+            ["du", "-sb", root], text=True, timeout=30,
+            stderr=subprocess.DEVNULL).split()[0])
+    except Exception:
+        return None
+
+
+def _readable_dir(path):
+    """(exists, readable). os.path.isdir is False for BOTH a missing directory
+    and one we lack traverse permission on, and those need opposite handling:
+    missing means "nothing there", unreadable means "67 GB we cannot see".
+    Reporting the second as an exact zero would be a confident lie."""
+    if os.path.isdir(path):
+        return True, True
+    parent = os.path.dirname(path.rstrip(os.sep))
+    while parent and parent != os.sep:
+        if os.path.exists(parent):
+            # A parent resolves but the target does not: either genuinely
+            # absent, or hidden behind a mode we cannot traverse.
+            return not os.access(parent, os.X_OK), False
+        parent = os.path.dirname(parent)
+    return False, False
 
 
 def disk(root=None):
     root = root or models_root(settings())
-    info = {"models_dir": None, "models_size": 0, "fs_used": 0, "fs_total": 0, "fs_free": 0}
-    if not os.path.isdir(root): return info
+    info = {"models_dir": None, "models_size": 0, "approximate": False,
+            "orphan_bytes": None, "fs_used": 0, "fs_total": 0, "fs_free": 0}
+    exists, readable = _readable_dir(root)
+    if not exists:
+        return info
     info["models_dir"] = root
-    try:
-        info["models_size"] = int(
-            subprocess.check_output(["du", "-sb", root], text=True, timeout=10).split()[0])
-    except Exception: pass
-    try:
-        st = os.statvfs(root)
+    if not readable:
+        # Permission-denied: fall through to the /api/tags sum below, which
+        # counts only referenced blobs and therefore understates the truth.
+        info["approximate"] = True
+        info["models_size"] = sum(m.get("size") or 0 for m in ollama.library())
+        st = _statvfs_walk_up(root)
+        if st is not None:
+            info["fs_total"] = st.f_blocks * st.f_frsize
+            info["fs_free"] = st.f_bavail * st.f_frsize
+            info["fs_used"] = info["fs_total"] - info["fs_free"]
+        return info
+
+    referenced = sum(m.get("size") or 0 for m in ollama.library())
+    exact = _du(root)
+    if exact is None:
+        # No read access to the store. Summing /api/tags counts only
+        # referenced blobs, so this understates the total — flag it.
+        info["models_size"] = referenced
+        info["approximate"] = True
+    else:
+        info["models_size"] = exact
+        # Everything du sees that no manifest references: reclaimable.
+        info["orphan_bytes"] = max(0, exact - referenced)
+
+    st = _statvfs_walk_up(root)
+    if st is not None:
         info["fs_total"] = st.f_blocks * st.f_frsize
         info["fs_free"] = st.f_bavail * st.f_frsize
         info["fs_used"] = info["fs_total"] - info["fs_free"]
-    except Exception: pass
     return info
 
 
@@ -177,7 +266,7 @@ def service_info():
                 info["uptime_s"] = int(uptime - starttime / clk)
             except Exception: pass
     except Exception: pass
-    info["engine"] = lmstudio.engine_info()
+    info["engine"] = {"name": "ollama", "version": ollama.version().get("version")}
     return info
 
 
@@ -342,8 +431,7 @@ def live():
 def state():
     """The full payload. Also served from the sampler cache."""
     import samplers
-    rows = samplers.LOGS.get()
-    cfg = samplers.SETTINGS.get()
+    rows = samplers.attribute(samplers.LOGS.get())
     return {
         **live(),
         "gpu_processes": samplers.GPU_PROCS.get(),
@@ -353,10 +441,13 @@ def state():
         "requests": rows[-30:][::-1],
         "stats_5m": logs.stats(rows),
         "top_endpoints": logs.top_endpoints(rows),
-        "model_activity": logs.model_activity(rows),
+        "by_client": logs.by_client(rows),
+        "problems": logs.problems(rows),
+        "log_age_s": logs.follower_age(),
         "disk": samplers.DISK.get(),
         "service": samplers.SERVICE.get(),
         "tailscale": samplers.TAILSCALE.get(),
-        "settings": cfg,
-        "lms_ok": os.access(LMS_BIN, os.X_OK),
+        "settings": samplers.SETTINGS.get(),
+        # Sampled, never called live — state() must not touch Ollama.
+        "ollama_ok": samplers.PING.get(),
     }

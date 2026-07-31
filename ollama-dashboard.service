@@ -1,0 +1,28 @@
+[Unit]
+Description=Ollama Dashboard
+Documentation=file:/opt/ollama-dashboard/README.md
+# A *user* unit, because it needs this user's group memberships: `adm` to read
+# the journal Ollama logs to, and `ollama` to size the model store. Ollama
+# itself is a system unit, so this cannot Require it — a user unit cannot
+# depend on a system one. It degrades gracefully when Ollama is down, which is
+# a state the dashboard exists to display.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ollama-dashboard
+# Bound to all interfaces: LAN, tailnet, and localhost. Note this exposes the
+# control panel — which can load, download and delete models, with no auth — to
+# anything that can reach this host on the LAN.
+Environment=OLLAMA_DASHBOARD_HOST=0.0.0.0
+Environment=OLLAMA_DASHBOARD_PORT=11435
+Environment=OLLAMA_URL=http://localhost:11434
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/ollama-dashboard/server.py
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=default.target

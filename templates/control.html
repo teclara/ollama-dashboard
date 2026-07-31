@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>LM Studio Control</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ollama Control</title>
 <style>
   :root{color-scheme:dark;--bg:oklch(17% .012 255);--surface:oklch(21% .014 255);--surface-raised:oklch(24% .016 255);--border:oklch(31% .018 255);--border-strong:oklch(39% .02 255);--text:oklch(92% .01 255);--dim:oklch(69% .02 255);--muted:oklch(57% .02 255);--accent:oklch(78% .12 220);--accent2:oklch(76% .1 292);--good:oklch(78% .13 150);--warn:oklch(82% .13 85);--bad:oklch(75% .15 25);--radius:10px}
   *{box-sizing:border-box}
@@ -71,7 +71,7 @@
 <body>
 <div class="shell">
   <header class="masthead">
-    <div><p class="eyebrow">Model operations</p><h1>LM Studio Control</h1><div class="subtitle">Load, test, acquire, and manage local models</div></div>
+    <div><p class="eyebrow">Model operations</p><h1>Ollama Control</h1><div class="subtitle">Load, acquire, and manage local models</div></div>
     <nav aria-label="Primary"><a href="/">Dashboard</a><a href="/control" class="active" aria-current="page">Control</a></nav>
   </header>
   <main>
@@ -83,53 +83,39 @@
       </div>
     </section>
     <section aria-labelledby="operate-title">
-      <div class="section-head"><h2 id="operate-title">Operate</h2><p>Configure a runtime or run a focused capability and performance check.</p></div>
-      <div class="grid-2">
+      <div class="section-head"><h2 id="operate-title">Operate</h2><p>Load a model with explicit context and GPU-layer settings.</p></div>
+      <div>
         <div class="card"><h3>Load model</h3>
-          <div class="row" style="margin-bottom:10px"><select id="load-model" class="grow" aria-label="Model to load"></select><button id="estimate-btn">Estimate</button><button class="primary" id="load-btn">Load</button></div>
+          <div class="row" style="margin-bottom:10px"><select id="load-model" class="grow" aria-label="Model to load"></select><button id="fit-btn">Check fit</button><button class="primary" id="load-btn">Load</button></div>
           <div class="opts">
-            <label>Context<input id="load-ctx" type="number" min="1" placeholder="default"></label>
-            <label>GPU offload<select id="load-gpu"><option value="">auto</option><option value="max">max</option><option value="off">off</option><option value="0.5">0.5</option></select></label>
-            <label>TTL (s)<input id="load-ttl" type="number" min="1" placeholder="none"></label>
-            <label>Parallel<input id="load-par" type="number" min="1" placeholder="default"></label>
-            <label>Identifier<input id="load-id" placeholder="model key"></label>
+            <label>num_ctx<input id="load-ctx" type="number" min="1" placeholder="server default"></label>
+            <label>num_gpu<input id="load-gpu" type="number" min="0" placeholder="all layers"></label>
+            <label>keep_alive<input id="load-ttl" placeholder="e.g. 30m"></label>
           </div>
-          <div id="estimate-out"></div><div class="meta">Load progress appears under Active work.</div>
-        </div>
-        <div class="card"><h3>Test scenario</h3>
-          <div class="row" style="margin-bottom:10px"><select id="test-model" class="grow" aria-label="Model to test"></select><select id="test-scenario" aria-label="Test scenario"></select><button class="primary" id="run-test">Run test</button></div>
-          <textarea id="test-custom" placeholder="Custom prompt" aria-label="Custom prompt" style="display:none"></textarea><div id="test-result" style="margin-top:12px"></div>
+          <div id="fit-out"></div>
+          <div id="server-opts" class="meta" style="text-align:left"></div>
+          <div class="meta">Load progress appears under Active work.</div>
         </div>
       </div>
     </section>
     <section aria-labelledby="inventory-title">
-      <div class="section-head"><h2 id="inventory-title">Local inventory</h2><p>Models currently stored on this machine, including load, test, and delete actions.</p></div>
+      <div class="section-head"><h2 id="inventory-title">Local inventory</h2><p>Models currently stored on this machine. Delete removes the model from the server.</p></div>
       <div class="card table-region"><h3>Local models</h3><div id="library"></div></div>
     </section>
     <section aria-labelledby="acquire-title">
-      <div class="section-head"><h2 id="acquire-title">Acquire models</h2><p>Find a catalog entry or download a known LM Studio or Hugging Face identifier.</p></div>
+      <div class="section-head"><h2 id="acquire-title">Acquire models</h2><p>Browse ollama.com/library or pull a known model name directly.</p></div>
       <div class="grid-2">
         <div class="card"><div class="card-head"><h3>Browse catalog</h3><span class="meta">Cached <span id="cat-age">—</span></span></div><div class="row" style="margin-bottom:10px"><input id="cat-search" class="grow" aria-label="Filter model catalog" placeholder="Filter by name or size, e.g. 8b"><button id="cat-refresh">Refresh</button></div><div id="catalog" style="max-height:520px;overflow-y:auto"></div></div>
-        <div class="card"><h3>Download model</h3><div class="row"><input id="dl-name" class="grow" aria-label="Model identifier" placeholder="Model identifier or Hugging Face URL"><button class="primary" id="dl-btn">Download</button></div><div class="meta">Download progress appears under Active work.</div></div>
+        <div class="card"><h3>Download model</h3><div class="row"><input id="dl-name" class="grow" aria-label="Model identifier" placeholder="Model name, e.g. llama3.1:8b"><button class="primary" id="dl-btn">Download</button></div><div class="meta">Download progress appears under Active work.</div></div>
       </div>
     </section>
     <section aria-labelledby="settings-title">
-      <div class="section-head"><h2 id="settings-title">Configuration</h2><p>Read-only LM Studio settings relevant to this dashboard.</p></div>
-      <div class="card table-region"><h3>LM Studio settings</h3><div id="config"></div></div>
+      <div class="section-head"><h2 id="settings-title">Configuration</h2><p>Read-only view of ollama.service's environment.</p></div>
+      <div class="card table-region"><h3>Server environment</h3><div id="config"></div></div>
     </section>
   </main>
 </div>
 <script>
-const SCENARIOS = {
-  baseline:  "Baseline (3-word reply)",
-  reasoning: "Reasoning (bat & ball)",
-  coding:    "Coding (is_prime)",
-  needle29k: "Needle in 29K context",
-  tool_call: "Tool calling (weather)",
-  abliter:   "Abliteration probe",
-  custom:    "Custom prompt",
-};
-
 const el = id => document.getElementById(id);
 function ce(tag, opts={}, children=[]){
   const e = document.createElement(tag);
@@ -167,24 +153,31 @@ async function refresh(){
   try{
     const s = await api('GET', '/api/state');
 
-    // Loaded models. Unload takes the instance identifier, which differs from
-    // the model key whenever the model was loaded with --identifier.
+    // Loaded models. Ollama identifies a loaded model by its name; there is no
+    // separate instance identifier the way LM Studio had.
     if(!s.loaded.length){ el('loaded').replaceChildren(ce('div',{cls:'empty',text:'no models loaded'})); }
     else {
       const t = ce('table');
-      t.appendChild(ce('tr',{},['identifier','model','ctx / max','par','ttl','status',''].map(h=>ce('th',{text:h}))));
+      t.appendChild(ce('tr',{},['model','placement','ctx','ttl',''].map(h=>ce('th',{text:h}))));
       for(const m of s.loaded){
         const btn = ce('button', {cls:'danger', text:'Unload'});
         btn.onclick = async () => {
           btn.disabled=true;
-          try{ await api('POST','/api/control/unload',{identifier:m.identifier}); }
+          try{ await api('POST','/api/control/unload',{model:m.model_key}); }
           catch(e){ alert(e.message); btn.disabled=false; }
           refresh();
         };
-        const ctx = m.context ? `${(m.context/1024).toFixed(0)}K / ${(m.max_context/1024).toFixed(0)}K` : '—';
-        const cells = [m.identifier, m.model_key, ctx, m.parallel ?? '—',
-                       m.ttl_s == null ? 'none' : fmtSecs(m.ttl_s), m.status || '—', ''];
-        const row = ce('tr',{},cells.map(c=>ce('td',{text:c==null?'—':String(c)})));
+        const ctx = m.context ? `${(m.context/1024).toFixed(0)}K` : '—';
+        const row = ce('tr',{},[
+          ce('td',{text:m.model_key}),
+          // size vs size_vram: when they differ, layers spilled to the CPU.
+          ce('td',{},[m.fully_gpu
+            ? ce('span',{cls:'pill good',text:'GPU'})
+            : ce('span',{cls:'pill warn',text:'CPU +'+fmtBytes(m.cpu_bytes)})]),
+          ce('td',{text:ctx}),
+          ce('td',{text:m.ttl_s == null ? 'none' : fmtSecs(m.ttl_s)}),
+          ce('td'),
+        ]);
         row.lastChild.replaceChildren(btn);
         t.appendChild(row);
       }
@@ -193,17 +186,20 @@ async function refresh(){
 
     // Local models
     const t = ce('table');
-    t.appendChild(ce('tr',{},['model','arch','params','quant','size','max ctx',''].map(h=>ce('th',{text:h}))));
-    const sel = el('test-model'), lsel = el('load-model');
-    const cur = sel.value, lcur = lsel.value;
-    sel.replaceChildren(); lsel.replaceChildren();
+    t.appendChild(ce('tr',{},['model','arch','params','quant','size','max ctx','',''].map(h=>ce('th',{text:h}))));
+    const lsel = el('load-model');
+    const lcur = lsel.value;
+    lsel.replaceChildren();
     for(const m of s.library){
       const actions = ce('td');
       const del = ce('button',{cls:'danger',text:'Delete'});
       del.onclick = () => confirmDelete(actions, del, m);
-      const test = ce('button',{text:'Test'});
-      test.onclick = () => { sel.value = m.model_key; el('test-scenario').value='baseline'; el('run-test').click(); };
-      actions.replaceChildren(del, ce('span',{text:' '}), test);
+      actions.replaceChildren(del);
+      const caps = ce('td');
+      for(const [flag,label] of [['vision','vision'],['tools','tools'],
+                                 ['thinking','thinking'],['embedding','embed']]){
+        if(m[flag]) caps.appendChild(ce('span',{cls:'pill dim',text:label,style:'margin-right:4px'}));
+      }
       const row = ce('tr',{},[
         ce('td',{text:m.model_key}),
         ce('td',{text:m.arch||'—'}),
@@ -211,33 +207,38 @@ async function refresh(){
         ce('td',{text:m.quant||'—'}),
         ce('td',{text:fmtBytes(m.size)}),
         ce('td',{text:m.max_context ? (m.max_context/1024).toFixed(0)+'K' : '—'}),
+        caps,
         actions,
       ]);
       if(m.loaded) row.firstChild.appendChild(ce('span',{cls:'pill good',text:'loaded',style:'margin-left:6px'}));
       t.appendChild(row);
-      sel.appendChild(ce('option',{text:m.model_key,attrs:{value:m.model_key}}));
       lsel.appendChild(ce('option',{text:m.model_key,attrs:{value:m.model_key}}));
     }
     el('library').replaceChildren(t);
-    if(cur && Array.from(sel.options).some(o=>o.value===cur)) sel.value = cur;
     if(lcur && Array.from(lsel.options).some(o=>o.value===lcur)) lsel.value = lcur;
 
-    // Settings (whitelisted keys only — never a raw dump)
+    // Server environment. The key set is not fixed — a user may add any
+    // OLLAMA_* variable — so this renders whatever arrived. Secret-shaped
+    // names are already redacted server-side.
     const cfg = s.settings || {};
     if(cfg.error){ el('config').replaceChildren(ce('div',{cls:'empty',text:'settings: '+cfg.error})); }
     else {
       const ct = ce('table');
-      ct.appendChild(ce('tr',{},['key','value'].map(h=>ce('th',{text:h}))));
-      const show = (k, v) => ct.appendChild(ce('tr',{},[
-        ce('td',{text:k}), ce('td',{text:v==null?'—':String(v),style:'color:#a78bfa'})]));
-      show('models folder', cfg.downloadsFolder);
-      const dcl = cfg.defaultContextLength;
-      show('default context', dcl && typeof dcl === 'object' ? dcl.value : dcl);
-      const g = cfg.modelLoadingGuardrails;
-      show('load guardrails', g && typeof g === 'object' ? g.mode : g);
-      show('local service', cfg.enableLocalService);
-      show('hf proxy', cfg.useHFProxy);
-      el('config').replaceChildren(ct, ce('div',{cls:'meta',text:cfg.path}));
+      ct.appendChild(ce('tr',{},['variable','value'].map(h=>ce('th',{text:h}))));
+      const keys = Object.keys(cfg).filter(k => k.startsWith('OLLAMA_')).sort();
+      if(!keys.length) ct.appendChild(ce('tr',{},[ce('td',{text:'—'}),ce('td',{text:'no OLLAMA_* variables set'})]));
+      for(const k of keys){
+        ct.appendChild(ce('tr',{},[
+          ce('td',{text:k}), ce('td',{text:String(cfg[k]),style:'color:#a78bfa'})]));
+      }
+      el('config').replaceChildren(ct, ce('div',{cls:'meta',text:'systemd unit: '+(cfg.unit||'—')}));
+      // Settings that exist server-wide and have no per-load equivalent, shown
+      // beside the load form so their absence there reads as "not per-load".
+      const so = el('server-opts');
+      if(so){
+        const par = cfg.OLLAMA_NUM_PARALLEL, max = cfg.OLLAMA_MAX_LOADED_MODELS;
+        so.textContent = `server-wide: num_parallel=${par ?? 'default'}, max_loaded=${max ?? 'default'}`;
+      }
     }
   } catch(e){ console.error(e); }
 }
@@ -309,8 +310,9 @@ async function refreshJobs(){
       card.appendChild(ce('div',{text:p.error || p.last_line || p.status || '—',
                                 style:'font-size:11px;color:var(--dim);margin-bottom:6px;word-break:break-word'}));
 
-      // `lms get` progress may be indeterminate; show a bar only when we have
-      // a real percentage or byte pair, otherwise the last line above stands in.
+      // Pull phases like "pulling manifest" and "verifying sha256 digest" carry
+      // no byte counts, so show a bar only when a real percentage or byte pair
+      // exists; otherwise the status line above stands in.
       const pct = p.total ? (p.completed/p.total*100) : (p.pct != null ? p.pct : null);
       if(pct != null && !p.done){
         card.appendChild(ce('div',{cls:'bar',style:'margin:6px 0'},[ce('div',{style:`width:${pct}%`})]));
@@ -337,16 +339,24 @@ el('jobs-clear').onclick = async () => {
 
 function loadOpts(){
   const v = id => { const s = el(id).value.trim(); return s === '' ? null : s; };
-  return {model: el('load-model').value, context: v('load-ctx'), gpu: v('load-gpu'),
-          ttl: v('load-ttl'), parallel: v('load-par'), identifier: v('load-id')};
+  return {model: el('load-model').value, context: v('load-ctx'),
+          gpu: v('load-gpu'), ttl: v('load-ttl')};
 }
-el('estimate-btn').onclick = async () => {
-  const out = el('estimate-out');
-  out.replaceChildren(ce('div',{cls:'empty',text:'estimating…'}));
+// Not an estimate: Ollama has no equivalent of `lms load --estimate-only`.
+// This compares the model's on-disk size to free VRAM and ignores KV cache
+// and context, so it is labelled a fit check rather than a prediction.
+el('fit-btn').onclick = async () => {
+  const out = el('fit-out');
+  out.replaceChildren(ce('div',{cls:'empty',text:'checking…'}));
   try{
-    const r = await api('POST','/api/control/load/estimate', loadOpts());
-    out.replaceChildren(r.ok ? ce('pre',{cls:'content',text:r.output})
-                             : ce('div',{cls:'empty',text:'error: '+r.error}));
+    const r = await api('POST','/api/control/load/fit', {model: el('load-model').value});
+    if(!r.ok){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+r.error})); return; }
+    out.replaceChildren(ce('div',{cls:'meta',style:'text-align:left'},[
+      ce('span',{cls:'pill '+(r.fits?'good':'warn'),
+                 text: r.fits ? 'fits' : 'may not fit'}),
+      ce('span',{text:` ${fmtBytes(r.model_bytes)} weights vs ${fmtBytes(r.free_bytes)} free VRAM `
+                       + '— excludes KV cache and context'}),
+    ]));
   } catch(e){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message})); }
 };
 el('load-btn').onclick = async () => {
@@ -360,11 +370,17 @@ el('load-btn').onclick = async () => {
 // Catalog -------------------------------------------------------------------
 
 let CAT_DATA = [];
+function useName(name){
+  el('dl-name').value = name;
+  el('dl-name').scrollIntoView({block:'center'});
+  el('dl-name').focus();
+}
 function renderCatalog(){
   const q = (el('cat-search').value || '').toLowerCase().trim();
   const items = CAT_DATA.filter(m => {
     if(!q) return true;
-    const hay = (m.name + ' ' + m.slug + ' ' + m.sizes.join(' ')).toLowerCase();
+    const hay = (m.name + ' ' + m.slug + ' ' + m.description + ' '
+                 + m.sizes.join(' ') + ' ' + (m.capabilities||[]).join(' ')).toLowerCase();
     return q.split(/\s+/).every(t => hay.includes(t));
   });
   const wrap = el('catalog');
@@ -374,12 +390,23 @@ function renderCatalog(){
     const card = ce('div', {style:'border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:6px;display:flex;justify-content:space-between;gap:8px;align-items:center'});
     const left = ce('div',{style:'flex:1;min-width:0'});
     left.appendChild(ce('div',{text:m.name,style:'color:var(--accent2);font-weight:600;font-size:13px'}));
-    left.appendChild(ce('div',{text:m.slug,style:'color:var(--dim);font-size:11px'}));
+    if(m.description){
+      left.appendChild(ce('div',{text:m.description,
+        style:'color:var(--dim);font-size:11px;margin-top:2px'}));
+    }
     const tags = ce('div',{style:'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px'});
-    for(const s of m.sizes) tags.appendChild(ce('span',{cls:'pill dim',text:s}));
+    // Capabilities first, then parameter sizes: the sizes are what you click
+    // through to a concrete tag, the capabilities are what you filter on.
+    for(const c of (m.capabilities||[])) tags.appendChild(ce('span',{cls:'pill good',text:c}));
+    for(const s of m.sizes){
+      const tag = ce('button',{cls:'pill dim',text:s,
+        style:'cursor:pointer;border:0;font:inherit;font-size:10px;font-weight:600'});
+      tag.onclick = () => useName(`${m.slug}:${s}`);
+      tags.appendChild(tag);
+    }
     left.appendChild(tags);
     const b = ce('button',{text:'use',style:'font-size:10px'});
-    b.onclick = () => { el('dl-name').value = m.slug; el('dl-name').scrollIntoView({block:'center'}); el('dl-name').focus(); };
+    b.onclick = () => useName(m.slug);
     card.appendChild(left); card.appendChild(b);
     wrap.appendChild(card);
   }
@@ -410,54 +437,6 @@ el('dl-btn').onclick = async () => {
     el('dl-name').value = '';
     refreshJobs();
   } catch(e){ alert(e.message); }
-};
-
-// Scenarios -----------------------------------------------------------------
-
-const ssel = el('test-scenario');
-for(const [k,label] of Object.entries(SCENARIOS)){
-  ssel.appendChild(ce('option',{text:label,attrs:{value:k}}));
-}
-ssel.onchange = () => { el('test-custom').style.display = ssel.value === 'custom' ? 'block' : 'none'; };
-
-function stat(k,v){ return ce('span',{cls:'stat'},[ce('div',{cls:'k',text:k}), ce('div',{cls:'v',text:v==null?'—':String(v)})]); }
-
-el('run-test').onclick = async () => {
-  const model = el('test-model').value, scenario = el('test-scenario').value;
-  const custom = el('test-custom').value;
-  const out = el('test-result');
-  out.replaceChildren(ce('div',{cls:'empty',text:`running ${scenario} on ${model}…`}));
-  el('run-test').disabled = true;
-  try{
-    const r = await api('POST','/api/control/test',{model, scenario, custom_prompt:custom});
-    if(!r.ok){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+r.error})); return; }
-    const st = r.stats || {}, mi = r.model_info || {}, rt = r.runtime || {};
-    const tps = st.tokens_per_second != null ? st.tokens_per_second.toFixed(1)+' tok/s' : '—';
-    const items = [ce('div',{},[
-      stat('model', r.model),
-      stat('scenario', r.scenario),
-      stat('throughput', tps),
-      // time-to-first-token comes straight from LM Studio's stats block
-      stat('ttft', st.ttft_s != null ? (st.ttft_s*1000).toFixed(0)+' ms' : '—'),
-      stat('generated', `${st.completion_tokens} tok` + (st.reasoning_tokens ? ` (${st.reasoning_tokens} reasoning)` : '')),
-      stat('prompt', `${st.prompt_tokens} tok`),
-      stat('gen time', st.generation_s != null ? st.generation_s.toFixed(2)+'s' : '—'),
-      stat('wall', st.wall_seconds + 's'),
-      stat('stop', st.stop_reason),
-    ])];
-    if(mi.arch || rt.name){
-      items.push(ce('div',{cls:'meta',text:
-        `${mi.arch||'—'} · ${mi.quant||'—'} · ctx ${mi.context_length||'—'} · ${rt.name||''} ${rt.version||''}`.trim()}));
-    }
-    if(r.thinking) items.push(ce('div',{cls:'meta',text:'thinking',style:'margin-top:8px'}), ce('pre',{cls:'thinking',text:r.thinking}));
-    if(r.content)  items.push(ce('div',{cls:'meta',text:'content', style:'margin-top:8px'}), ce('pre',{cls:'content',text:r.content}));
-    if(r.tool_calls && r.tool_calls.length){
-      items.push(ce('div',{cls:'meta',text:'tool calls', style:'margin-top:8px'}));
-      items.push(ce('pre',{cls:'content',text:JSON.stringify(r.tool_calls,null,2)}));
-    }
-    out.replaceChildren(...items);
-  } catch(e){ out.replaceChildren(ce('div',{cls:'empty',text:'error: '+e.message})); }
-  finally{ el('run-test').disabled = false; }
 };
 
 refresh(); setInterval(refresh, 3000);

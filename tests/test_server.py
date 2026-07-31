@@ -42,17 +42,21 @@ class TestRoutes(unittest.TestCase):
         self.assertEqual(code, 200)
         s = json.loads(body)
         for k in ("gpu", "loaded", "library", "requests", "stats_5m",
-                  "top_endpoints", "model_activity", "disk", "service",
-                  "host", "settings"):
+                  "top_endpoints", "by_client", "problems", "log_age_s",
+                  "disk", "service", "host", "settings", "ollama_ok"):
             self.assertIn(k, s)
 
-    def test_state_has_no_removed_ollama_keys(self):
+    def test_state_has_no_removed_lmstudio_keys(self):
         s = json.loads(self._req("/api/state")[1])
-        self.assertNotIn("top_clients", s)
-        self.assertNotIn("server_config", s)
+        # model_activity was parsed out of LM Studio's logs. Ollama's GIN lines
+        # carry no model name, so attribution moved to samplers.attribute().
+        self.assertNotIn("model_activity", s)
+        self.assertNotIn("lms_ok", s)
 
     def test_state_never_contains_credentials(self):
-        self.assertNotIn(b"hfDownloadToken", self._req("/api/state")[1])
+        body = self._req("/api/state")[1]
+        for probe in (b"hfDownloadToken", b"API_KEY=", b"sk-"):
+            self.assertNotIn(probe, body)
 
     def test_jobs_endpoint(self):
         code, body = self._req("/api/control/jobs")

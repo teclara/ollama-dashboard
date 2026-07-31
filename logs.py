@@ -1,193 +1,302 @@
-"""LM Studio server-log discovery, parsing, and windowed aggregation.
+"""Ollama journald reading, GIN access-log parsing, and windowed aggregation.
 
-LM Studio's logs carry far less than Ollama's GIN access logs: there is no
-HTTP status, no latency, and no client IP anywhere in them. So there are no
-percentile, error-rate, or per-client aggregates here — that data does not exist.
-What the logs do give is request paths and per-model inference events.
+Ollama logs to journald, not to files, so the byte-tailing and file-rollover
+machinery this module used for LM Studio is gone. What replaces it is richer:
+GIN access lines carry an HTTP status, a latency, and a client address, none of
+which LM Studio's logs contained. Percentiles, error rates, and per-client
+breakdowns are therefore possible here for the first time.
+
+What is NOT available is the model name. GIN lines do not carry one, and the
+only place the journal names a model is by weights-blob SHA, which does not
+match the manifest digest in /api/tags. Model attribution is done instead by
+samplers.MODEL_TIMELINE and is inferred, not observed.
 """
-import glob, json, os, re, time
-from collections import defaultdict
+import math, re, subprocess, threading, time
+from collections import defaultdict, deque
 from datetime import datetime
 
 from config import (
-    LOG_DIR, LOG_TAIL_BYTES, LOG_WINDOW_LINES, NOISE_PATHS, STATS_WINDOW_SEC,
+    JOURNAL_BACKFILL, JOURNAL_UNIT, LOG_WINDOW_LINES, NOISE_PATHS,
+    STATS_WINDOW_SEC,
 )
 
-_TS = r"\[(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]"
+LOOPBACK = {"::1", "127.0.0.1", "localhost"}
 
-_REQUEST_RE = re.compile(
-    _TS + r"\[\w+\] Received request: (?P<method>[A-Z]+) to (?P<path>\S+)")
+# GIN's access line, e.g.
+# [GIN] 2026/07/30 - 23:25:18 | 200 |  51.336µs |  ::1 | GET "/api/ps"
+_GIN_RE = re.compile(
+    r"^\[GIN\]\s+(?P<ts>\d{4}/\d{2}/\d{2} - \d{2}:\d{2}:\d{2})\s*\|"
+    r"\s*(?P<status>\d{3})\s*\|"
+    r"\s*(?P<latency>\S+)\s*\|"
+    r"\s*(?P<client>\S+)\s*\|"
+    r"\s*(?P<method>[A-Z]+)\s+\"(?P<path>[^\"]*)\"")
 
-# Model events. The bracket tag is the *loaded instance identifier*, which may be
-# a custom name from `lms load --identifier`, not the model key. Non-model lines
-# (e.g. LMSAuthenticator) occupy the same slot, so the event suffix does the
-# discriminating — never the bracket position.
-_MODEL_RE = re.compile(
-    _TS + r"\[\w+\]\[(?P<model>[^\]]+)\] (?P<event>.+)$")
+_LEVEL_RE = re.compile(r"level=(?P<level>WARN|ERROR)\b")
+_MSG_RE = re.compile(r'msg="(?P<msg>(?:\\.|[^"\\])*)"')
 
-_EVENTS = (
-    (re.compile(r"^Running chat completion on conversation with (\d+) messages"), "completion"),
-    (re.compile(r"^Streaming response"), "stream_start"),
-    (re.compile(r"^Finished streaming response"), "stream_end"),
-    (re.compile(r"^Generated prediction"), "prediction"),
-    (re.compile(r"^Model generated tool calls"), "tool_calls"),
-)
+# Go's time.Duration.String(). Sub-second units never compound; h/m/s do, as in
+# "2m49s" and "1h2m3.5s". Order matters: µs/ms/ns must be tried before the bare
+# "s"/"m" so "130ms" is not read as 130 minutes.
+_DUR_UNITS = (("ns", 1e-9), ("µs", 1e-6), ("us", 1e-6), ("ms", 1e-3),
+              ("h", 3600.0), ("m", 60.0), ("s", 1.0))
+_DUR_TOKEN_RE = re.compile(r"(\d+(?:\.\d+)?)(ns|µs|us|ms|h|m|s)")
+
+
+def parse_duration(s):
+    """A Go duration literal -> seconds, or None.
+
+    Must sum every component. "2m49s" is 169 seconds; matching only the first
+    token would report 120 and quietly under-state every slow request.
+    """
+    if not s:
+        return None
+    tokens = _DUR_TOKEN_RE.findall(s.strip())
+    if not tokens:
+        return None
+    # Reject trailing junk so "banana" and "12x" do not parse as partial hits.
+    if "".join(a + b for a, b in tokens) != s.strip():
+        return None
+    total = 0.0
+    for value, unit in tokens:
+        total += float(value) * dict(_DUR_UNITS)[unit]
+    return total
 
 
 def _epoch(ts):
-    try: return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
-    except Exception: return 0
+    try:
+        return datetime.strptime(ts, "%Y/%m/%d - %H:%M:%S").timestamp()
+    except Exception:
+        return 0
 
 
-def _row(ts, kind, **kw):
-    r = {"ts": ts, "epoch": _epoch(ts), "kind": kind,
-         "method": None, "path": None, "model": None, "messages": None,
-         "prompt_tokens": None, "completion_tokens": None,
-         "total_tokens": None}
+def _row(kind, ts, **kw):
+    r = {"kind": kind, "ts": ts, "epoch": _epoch(ts) if ts else time.time(),
+         "status": None, "latency_s": None, "client": None, "method": None,
+         "path": None, "level": None, "message": None, "model": None}
     r.update(kw)
     return r
 
 
 def parse_line(line):
-    """One log line -> a row, or None if it carries nothing we track."""
-    if not line or not line.startswith("["): return None
+    """One journal line -> a row, or None if it carries nothing we track."""
+    if not line:
+        return None
 
-    m = _REQUEST_RE.match(line)
+    m = _GIN_RE.match(line)
     if m:
-        return _row(m.group("ts"), "request",
-                    method=m.group("method"), path=m.group("path"))
+        return _row("request", m.group("ts"),
+                    status=int(m.group("status")),
+                    latency_s=parse_duration(m.group("latency")),
+                    client=m.group("client"),
+                    method=m.group("method"),
+                    path=m.group("path"))
 
-    m = _MODEL_RE.match(line)
+    m = _LEVEL_RE.search(line)
     if m:
-        model, event = m.group("model"), m.group("event")
-        for rx, kind in _EVENTS:
-            hit = rx.match(event)
-            if hit:
-                msgs = int(hit.group(1)) if kind == "completion" else None
-                return _row(m.group("ts"), kind, model=model, messages=msgs)
+        msg = _MSG_RE.search(line)
+        return _row("problem", None, level=m.group("level"),
+                    message=(msg.group("msg") if msg else line)[:300])
     return None
+
+
+def is_noise(row):
+    """True for the dashboard's own polling.
+
+    Filtered on path AND loopback, never path alone: other clients hitting the
+    same endpoints — the Open WebUI container polls /api/tags every few
+    seconds — are real consumers and must stay visible in the client breakdown.
+    """
+    return (row.get("kind") == "request"
+            and row.get("path") in NOISE_PATHS
+            and row.get("client") in LOOPBACK)
 
 
 def parse_lines(lines):
     out = []
-    pending_request = None
-    pending_prediction = None
     for line in lines:
-        line = line.rstrip("\n")
-        r = parse_line(line)
-        if r is None and not line.startswith("["):
-            # Request and prediction payloads are pretty-printed JSON blocks.
-            # Capture only the small metadata fields needed by the dashboard;
-            # never retain prompts, generated content, or tool arguments.
-            model = re.match(r'^\s*"model"\s*:\s*("(?:\\.|[^"\\])*")', line)
-            if pending_request is not None and model:
-                try: pending_request["model"] = json.loads(model.group(1))
-                except Exception: pass
-            token = re.match(
-                r'^\s*"(prompt_tokens|completion_tokens|total_tokens)"\s*:\s*(\d+)',
-                line,
-            )
-            if pending_prediction is not None and token:
-                pending_prediction[token.group(1)] = int(token.group(2))
+        r = parse_line(line.rstrip("\n") if isinstance(line, str) else line)
+        if r is None or is_noise(r):
             continue
-        if line.startswith("["):
-            pending_request = None
-            pending_prediction = None
-        if r is None: continue
-        if r["kind"] == "request" and r["path"] in NOISE_PATHS: continue
         out.append(r)
-        if r["kind"] == "request": pending_request = r
-        elif r["kind"] == "prediction": pending_prediction = r
     return out
 
 
-def log_files(log_dir=None):
-    """All log files, newest-modified first."""
-    log_dir = log_dir or LOG_DIR
-    try:
-        found = glob.glob(os.path.join(log_dir, "*", "*.log"))
-        return sorted(found, key=os.path.getmtime, reverse=True)
-    except Exception:
-        return []
+# journald follower -----------------------------------------------------------
+#
+# One long-lived `journalctl -f`, mirroring the nvidia-smi and dmon streamers in
+# samplers.py and sources.py. Spawning journalctl once a second would work but
+# would re-read and re-parse the same tail on every tick.
+
+_BUF = deque(maxlen=LOG_WINDOW_LINES)
+_BUF_LOCK = threading.Lock()
+_LAST_LINE_TS = [0.0]
+_STOP = threading.Event()
+_STARTED = threading.Event()
+_PROC = [None]  # the in-flight journalctl Popen, if any; mutable cell so
+                # stop_follower() can reach it from another thread.
+_RETRY_DELAY_SEC = 2  # module-level so tests can shrink it for a fast respawn check
 
 
-def tail_lines(path, nbytes):
-    """Last `nbytes` of a file as lines, dropping any partial leading line."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            start = max(0, size - nbytes)
-            f.seek(start)
-            data = f.read()
-    except Exception:
-        return []
-    text = data.decode("utf-8", errors="replace")
-    if start and "\n" in text:
-        text = text.split("\n", 1)[1]
-    return text.splitlines()
+def _journal_cmd():
+    return ["journalctl", "-u", JOURNAL_UNIT, "-f", "-n", str(JOURNAL_BACKFILL),
+            "-o", "cat", "--no-pager"]
 
 
-def read_window(log_dir=None, window_sec=None, tail_bytes=None, max_rows=None):
-    """Parsed rows covering at least the last `window_sec`, oldest first.
+def _ingest(line):
+    r = parse_line(line)
+    if r is None or is_noise(r):
+        return False
+    with _BUF_LOCK:
+        _BUF.append(r)
+        _LAST_LINE_TS[0] = time.time()
+    return True
 
-    Reading a fixed number of *lines* does not work here. LM Studio logs full
-    request bodies at DEBUG, so a single chat completion emits hundreds of
-    untimestamped JSON continuation lines — measured on this machine, 528 of
-    any 600 consecutive lines were body continuations, and 600 lines spanned
-    only 11 seconds. A line budget large enough for a 5-minute window would be
-    unbounded. So read by bytes from the tail instead and stop once the parsed
-    rows actually reach back past the cutoff, walking into older files so the
-    daily rollover does not truncate the window.
+
+def _follow_loop():
+    while not _STOP.is_set():
+        try:
+            proc = subprocess.Popen(_journal_cmd(), stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            _PROC[0] = proc
+            for line in proc.stdout:
+                if _STOP.is_set():
+                    break
+                _ingest(line.rstrip("\n"))
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # terminate() did not land. Kill outright rather than
+                # swallowing this and letting the next iteration spawn a
+                # second journalctl on top of one still running, which
+                # would double-ingest every line.
+                proc.kill()
+                proc.wait()
+        except Exception:
+            pass
+        finally:
+            _PROC[0] = None
+        # journalctl exited — vacuum, rotation, or a killed process. Rebuild
+        # from the backfill rather than leaving a frozen window on screen.
+        _STOP.wait(_RETRY_DELAY_SEC)
+
+
+def start_follower():
+    """Launch the journal follower. Idempotent."""
+    if _STARTED.is_set():
+        return
+    _STARTED.set()
+    threading.Thread(target=_follow_loop, daemon=True).start()
+
+
+def stop_follower():
+    """Called by samplers.stop_all() on shutdown.
+
+    Terminating the in-flight journalctl subprocess (if any) is not an
+    optional nicety here: `for line in proc.stdout` in _follow_loop blocks
+    on the pipe and only re-checks _STOP after a line arrives. Against a
+    quiet unit that line may never come, so setting _STOP alone can never
+    unblock the thread — the subprocess itself has to be killed to force
+    the read to return.
     """
-    window_sec = window_sec or STATS_WINDOW_SEC
-    tail_bytes = tail_bytes or LOG_TAIL_BYTES
-    max_rows = max_rows or LOG_WINDOW_LINES
-    cutoff = time.time() - window_sec
+    _STOP.set()
+    proc = _PROC[0]
+    if proc is not None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    _STARTED.clear()
 
-    rows = []
-    for path in log_files(log_dir):
-        rows = parse_lines(tail_lines(path, tail_bytes)) + rows
-        if rows and rows[0]["epoch"] and rows[0]["epoch"] <= cutoff:
-            break  # window covered
-        if len(rows) >= max_rows:
-            break
-    return rows[-max_rows:]
+
+def read_window():
+    with _BUF_LOCK:
+        return list(_BUF)
+
+
+def follower_age():
+    """Seconds since the last accepted line, or None if none ever arrived.
+
+    The UI must surface this. A dead follower otherwise presents a frozen
+    window as though it were current.
+    """
+    with _BUF_LOCK:
+        return time.time() - _LAST_LINE_TS[0] if _LAST_LINE_TS[0] else None
 
 
 # Aggregation ---------------------------------------------------------------
 
 def _recent(rows, window_sec):
     cutoff = time.time() - window_sec
-    return [r for r in rows if r["epoch"] >= cutoff]
+    return [r for r in rows if r.get("epoch", 0) >= cutoff]
+
+
+def _requests(rows, window_sec):
+    return [r for r in _recent(rows, window_sec) if r["kind"] == "request"]
+
+
+def _is_error(row):
+    s = row.get("status")
+    return s is not None and s >= 400
+
+
+def percentile(values, p):
+    """Nearest-rank percentile. None for an empty sample.
+
+    math.ceil, not round(x + 0.5): the latter hits Python's banker's rounding
+    on exact halves and returns the 96th of 100 samples for p95.
+    """
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    return vals[max(1, math.ceil(p / 100.0 * len(vals))) - 1]
 
 
 def stats(rows, window_sec=None):
     window_sec = window_sec or STATS_WINDOW_SEC
-    recent = [r for r in _recent(rows, window_sec) if r["kind"] == "request"]
-    return {"window_sec": window_sec, "count": len(recent),
-            "rps": round(len(recent) / window_sec, 2) if recent else 0}
+    reqs = _requests(rows, window_sec)
+    errors = [r for r in reqs if _is_error(r)]
+    lat = [r["latency_s"] for r in reqs]
+    return {
+        "window_sec": window_sec,
+        "count": len(reqs),
+        "rps": round(len(reqs) / window_sec, 2) if reqs else 0,
+        "error_count": len(errors),
+        "error_rate": round(len(errors) / len(reqs) * 100, 1) if reqs else 0,
+        "p50_s": percentile(lat, 50),
+        "p95_s": percentile(lat, 95),
+        "p99_s": percentile(lat, 99),
+    }
 
 
 def top_endpoints(rows, window_sec=None, top=8):
     window_sec = window_sec or STATS_WINDOW_SEC
-    counts = defaultdict(int)
-    for r in _recent(rows, window_sec):
-        if r["kind"] == "request": counts[r["path"]] += 1
-    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
-    return [{"path": p, "count": c} for p, c in ranked[:top]]
+    groups = defaultdict(list)
+    for r in _requests(rows, window_sec):
+        groups[r["path"]].append(r)
+    out = [{"path": p,
+            "count": len(rs),
+            "errors": sum(1 for r in rs if _is_error(r)),
+            "p95_s": percentile([r["latency_s"] for r in rs], 95)}
+           for p, rs in groups.items()]
+    return sorted(out, key=lambda x: -x["count"])[:top]
 
 
-_ACTIVITY_KEYS = {"completion": "completions", "prediction": "predictions",
-                  "tool_calls": "tool_calls", "stream_end": "streams"}
-
-
-def model_activity(rows, window_sec=None):
+def by_client(rows, window_sec=None, top=8):
+    """Per-client request counts. Impossible under LM Studio, whose logs
+    carried no client address at all."""
     window_sec = window_sec or STATS_WINDOW_SEC
-    by_model = defaultdict(lambda: {"completions": 0, "predictions": 0,
-                                    "tool_calls": 0, "streams": 0})
-    for r in _recent(rows, window_sec):
-        key = _ACTIVITY_KEYS.get(r["kind"])
-        if key and r["model"]: by_model[r["model"]][key] += 1
-    return sorted([{"model": m, **v} for m, v in by_model.items()],
-                  key=lambda x: -x["completions"])
+    groups = defaultdict(list)
+    for r in _requests(rows, window_sec):
+        groups[r["client"]].append(r)
+    out = [{"client": c,
+            "count": len(rs),
+            "errors": sum(1 for r in rs if _is_error(r)),
+            "last_seen": max(r["epoch"] for r in rs)}
+           for c, rs in groups.items()]
+    return sorted(out, key=lambda x: -x["count"])[:top]
+
+
+def problems(rows, limit=10):
+    probs = [r for r in rows if r["kind"] == "problem"]
+    return sorted(probs, key=lambda r: -r.get("epoch", 0))[:limit]
