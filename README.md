@@ -55,7 +55,7 @@ Requests the dashboard makes to `/api/tags`, `/api/ps` and `/api/version` are fi
 
 Because GIN logs a line when a request *completes*, the span matters: a request is matched over `[completed - latency, completed]`, not at its end timestamp. A request whose span crosses a model swap reports no model rather than naming the one that happened to be loaded when it finished. Residency is never carried past the keep_alive expiry, so a stalled sampler cannot keep attributing new traffic to a stale model. Exact under `OLLAMA_MAX_LOADED_MODELS=1`; above that it records "unknown" rather than guessing.
 
-**Staleness is visible.** The journal follower is a long-lived `journalctl -f`. If it dies, the request panel is marked stale rather than presenting a frozen window as current.
+**Follower health is visible.** The journal follower is a long-lived `journalctl -f`. If the process dies the dashboard says so, rather than presenting a frozen window as current. It keys on the subprocess rather than on line arrival — a healthy follower watching an idle server reads nothing for minutes, and warning on that is a false alarm.
 
 ## Control panel
 
@@ -116,7 +116,7 @@ It runs as a *user* unit because it needs your group memberships (`adm`, `ollama
 python3 -m pytest -q
 ```
 
-178 tests, standard library only, no running Ollama required. Fixtures are captured from a real instance: `/api/tags`, `/api/ps`, a journald excerpt with real GIN lines, and the `ollama.com/library` HTML.
+191 tests, standard library only, no running Ollama required. Fixtures are captured from a real instance: `/api/tags`, `/api/ps`, a journald excerpt with real GIN lines, and the `ollama.com/library` HTML.
 
 ## Layout
 

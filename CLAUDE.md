@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 python3 server.py                                    # run on http://127.0.0.1:11435
-python3 -m pytest -q                                 # full suite (178 tests, ~1.3s)
+python3 -m pytest -q                                 # full suite (191 tests, ~1.3s)
 python3 -m pytest tests/test_logs.py -v              # one file
 python3 -m pytest tests/test_logs.py::TestParseDuration::test_compound_minutes_and_seconds -q
 python3 -m unittest discover -s tests                # also works; tests are unittest-style
@@ -85,7 +85,8 @@ Intervals are **half-open** `[start, end)`. With inclusive ends, the instant one
 
 Several payload fields exist so the UI never presents broken input as real data. Preserve them when touching templates:
 
-- `log_age_s` — a dead journal follower must be shown as stale, not as a frozen-but-current window.
+- `log_follower_ok` — whether the `journalctl` subprocess is running. This, not silence, is the health signal: a healthy follower on an idle server reads nothing for minutes. Keying the banner on line arrival made it cry wolf on a live follower.
+- `log_age_s` — freshness of the displayed requests only. Grows without bound on an idle server, which is not a fault. Never alarm on it alone.
 - `disk.approximate` — the model-store size is a lower bound when unreadable; the UI renders `≥`.
 - `ollama_ok` — an unreachable server empties the model panels; say so.
 - `fully_gpu` / `cpu_bytes` — `size` vs `size_vram`; when they differ, layers spilled to CPU.
