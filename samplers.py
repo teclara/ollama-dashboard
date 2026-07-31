@@ -111,43 +111,122 @@ _STARTED = threading.Event()
 #
 # GIN access lines carry no model name, and the only place the journal names a
 # model is by weights-blob SHA, which does not match the manifest digest in
-# /api/tags. So attribution is inferred: record which model was resident at
-# each /api/ps sample, then map request timestamps onto that.
+# /api/tags. So attribution is inferred from residency: record which model was
+# loaded at each /api/ps sample, then ask which model was resident while a
+# request was in flight.
 #
-# Exact under OLLAMA_MAX_LOADED_MODELS=1. Above that we record None rather than
-# picking one, so attribution degrades to "unknown" instead of to a wrong
-# answer. Anything rendering row["model"] must label it inferred, not observed.
+# Three things make this more than a point lookup:
+#
+#   1. GIN logs a line when a request COMPLETES, not when it starts. A pull
+#      that took 7 minutes is stamped at minute 7. Attributing by the log
+#      timestamp alone would credit whatever happened to be loaded at the end.
+#      Every GIN row carries its own latency, so the real span is known:
+#      [epoch - latency_s, epoch].
+#
+#   2. /api/ps reports expires_at, so residency has a known end, not just a
+#      last-seen sample. Without it a stalled sampler would keep attributing
+#      new requests to whatever was loaded when it died, forever.
+#
+#   3. If a request's span crosses a model swap, no single model served it.
+#      That returns None. Guessing would be a confident lie the UI renders as
+#      fact.
+#
+# Exact under OLLAMA_MAX_LOADED_MODELS=1. With more than one model resident,
+# record_timeline stores None rather than picking one. Anything rendering
+# row["model"] must label it inferred, not observed.
 
 MODEL_TIMELINE = deque(maxlen=PS_TIMELINE_LEN)
 _TIMELINE_LOCK = threading.Lock()
 
+# How far past the last observation residency may be assumed when expires_at is
+# unknown. Covers the sampling gap and its jitter — not an outage.
+_TRAILING_GRACE_SEC = 3 * LOADED_SAMPLE_SEC
+
 
 def record_timeline(loaded, now=None):
+    """Record which model was resident at this sample, and when it expires."""
     now = time.time() if now is None else now
-    keys = [m.get("model_key") for m in (loaded or []) if m.get("model_key")]
-    resident = keys[0] if len(keys) == 1 else None
+    models = [m for m in (loaded or []) if m.get("model_key")]
+    if len(models) == 1:
+        resident = models[0]["model_key"]
+        ttl = models[0].get("ttl_s")
+        expires = now + ttl if ttl is not None else None
+    else:
+        # Nothing loaded, or too many to attribute unambiguously.
+        resident, expires = None, None
     with _TIMELINE_LOCK:
-        MODEL_TIMELINE.append((now, resident))
+        MODEL_TIMELINE.append((now, resident, expires))
 
 
-def model_at(epoch):
-    """Which model was resident at `epoch`, or None if unknown or ambiguous."""
+def residency_intervals():
+    """Observations -> [(start, end, model)], oldest first, half-open [start, end).
+
+    Consecutive samples showing the same model collapse into one interval. An
+    interval ends where the next observation contradicts it; the most recent
+    one ends at expires_at, or after a short grace period when the TTL is
+    unknown. The exact swap instant between two samples is not observable, so
+    a boundary is accurate only to within one sampling interval.
+
+    Half-open matters at a swap: with inclusive ends, the instant the old
+    model's interval closes and the new one opens would match both and read as
+    ambiguous, so every request landing exactly on a sample boundary would go
+    unattributed.
+    """
     with _TIMELINE_LOCK:
         snapshot = list(MODEL_TIMELINE)
-    found = None
-    for ts, model in snapshot:
-        if ts <= epoch:
-            found = model
+
+    out = []
+    i, n = 0, len(snapshot)
+    while i < n:
+        start, model, _ = snapshot[i]
+        j = i
+        while j + 1 < n and snapshot[j + 1][1] == model:
+            j += 1
+        last_ts, _, last_expires = snapshot[j]
+        if j + 1 < n:
+            end = snapshot[j + 1][0]   # contradicted by the next sample
         else:
-            break
-    return found
+            # Never extrapolate far past the keep_alive expiry: a sampler that
+            # stopped an hour ago must not attribute requests made since. The
+            # grace floor keeps the observation itself attributable even when
+            # the model was already seconds from expiry when we saw it.
+            end = max(last_expires or 0.0, last_ts + _TRAILING_GRACE_SEC)
+        if model is not None:
+            out.append((start, end, model))
+        i = j + 1
+    return out
+
+
+def model_during(start, end, intervals=None):
+    """Which model was resident for the whole span, or None.
+
+    None when nothing covers the span, and also when the span straddles a
+    swap — two models each served part of it and neither is the answer.
+    """
+    if intervals is None:
+        intervals = residency_intervals()
+    hits = {m for (s, e, m) in intervals if s <= end and start < e}
+    return hits.pop() if len(hits) == 1 else None
+
+
+def model_at(epoch, intervals=None):
+    """Which model was resident at `epoch`, or None if unknown or ambiguous."""
+    return model_during(epoch, epoch, intervals)
 
 
 def attribute(rows):
-    """Tag request rows with the model that was resident when they arrived."""
+    """Tag request rows with the model that was resident while they ran.
+
+    Spans, not instants: a request that completed at `epoch` after `latency_s`
+    seconds was in flight for [epoch - latency_s, epoch].
+    """
+    intervals = residency_intervals()   # built once, not per row
     for r in rows:
-        if r.get("kind") == "request":
-            r["model"] = model_at(r.get("epoch", 0))
+        if r.get("kind") != "request":
+            continue
+        end = r.get("epoch") or 0
+        latency = r.get("latency_s") or 0
+        r["model"] = model_during(end - latency, end, intervals)
     return rows
 
 

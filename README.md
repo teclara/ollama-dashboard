@@ -51,7 +51,9 @@ Requests the dashboard makes to `/api/tags`, `/api/ps` and `/api/version` are fi
 
 **Request statistics** come from Ollama's GIN access lines, which carry an HTTP status, a latency, and a client address. That gives error rate, p50/p95/p99 latency, per-endpoint p95, and a per-client breakdown.
 
-**The model column is inferred, and labelled as such.** GIN lines carry no model name, and the only place the journal names a model is by weights-blob SHA, which does not match the manifest digest in `/api/tags`. So the dashboard records which model was resident at each `/api/ps` sample and maps request timestamps onto that. This is exact under `OLLAMA_MAX_LOADED_MODELS=1`. Above that it records "unknown" rather than guessing.
+**The model column is inferred, and labelled as such.** GIN lines carry no model name, and the only place the journal names a model is by weights-blob SHA, which does not match the manifest digest in `/api/tags`. So the dashboard builds residency intervals from `/api/ps` — including each model's `expires_at` — and asks which model was loaded for the whole time a request was in flight.
+
+Because GIN logs a line when a request *completes*, the span matters: a request is matched over `[completed - latency, completed]`, not at its end timestamp. A request whose span crosses a model swap reports no model rather than naming the one that happened to be loaded when it finished. Residency is never carried past the keep_alive expiry, so a stalled sampler cannot keep attributing new traffic to a stale model. Exact under `OLLAMA_MAX_LOADED_MODELS=1`; above that it records "unknown" rather than guessing.
 
 **Staleness is visible.** The journal follower is a long-lived `journalctl -f`. If it dies, the request panel is marked stale rather than presenting a frozen window as current.
 

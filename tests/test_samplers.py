@@ -1,4 +1,5 @@
 import threading, time, unittest
+from unittest import mock
 
 import samplers
 import sources
@@ -148,28 +149,45 @@ class TestLivePayload(unittest.TestCase):
 
 
 class TestModelTimeline(unittest.TestCase):
+    """Attribution is inferred from residency intervals, not point lookups.
+
+    Two properties matter and neither is free: a request is attributed over the
+    span it was actually in flight, and residency is never extrapolated past
+    what the evidence supports.
+    """
+
     def setUp(self):
         samplers.MODEL_TIMELINE.clear()
 
-    def tearDown(self):
-        samplers.MODEL_TIMELINE.clear()
+    tearDown = setUp
+
+    @staticmethod
+    def _obs(key, now, ttl=None):
+        samplers.record_timeline(
+            [{"model_key": key, "ttl_s": ttl}] if key else [], now=now)
 
     def test_records_the_resident_model(self):
-        samplers.record_timeline([{"model_key": "gemma4:31b"}], now=100.0)
+        self._obs("gemma4:31b", 100.0)
         self.assertEqual(samplers.model_at(100.0), "gemma4:31b")
 
     def test_records_none_when_nothing_is_loaded(self):
-        samplers.record_timeline([], now=100.0)
+        self._obs(None, 100.0)
         self.assertIsNone(samplers.model_at(100.0))
 
-    def test_lookup_uses_the_most_recent_observation_at_or_before(self):
-        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
-        samplers.record_timeline([{"model_key": "b:1"}], now=200.0)
+    def test_residency_spans_consecutive_samples(self):
+        for t in (100.0, 102.0, 104.0):
+            self._obs("a:1", t)
+        self.assertEqual(samplers.model_at(103.0), "a:1")
+        self.assertEqual(len(samplers.residency_intervals()), 1)
+
+    def test_a_run_ends_where_the_next_sample_contradicts_it(self):
+        self._obs("a:1", 100.0)
+        self._obs("b:1", 200.0)
         self.assertEqual(samplers.model_at(150.0), "a:1")
-        self.assertEqual(samplers.model_at(250.0), "b:1")
+        self.assertEqual(samplers.model_at(200.0), "b:1")
 
     def test_request_before_any_observation_is_unattributed(self):
-        samplers.record_timeline([{"model_key": "a:1"}], now=200.0)
+        self._obs("a:1", 200.0)
         self.assertIsNone(samplers.model_at(100.0))
 
     def test_multiple_loaded_models_is_ambiguous_not_a_guess(self):
@@ -181,19 +199,72 @@ class TestModelTimeline(unittest.TestCase):
 
     def test_timeline_is_bounded(self):
         for i in range(samplers.PS_TIMELINE_LEN + 100):
-            samplers.record_timeline([{"model_key": "a:1"}], now=float(i))
+            self._obs("a:1", float(i))
         self.assertEqual(len(samplers.MODEL_TIMELINE), samplers.PS_TIMELINE_LEN)
 
-    def test_attribute_tags_rows_in_place(self):
-        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
-        rows = [{"kind": "request", "epoch": 150.0, "model": None}]
-        out = samplers.attribute(rows)
-        self.assertEqual(out[0]["model"], "a:1")
+    # Residency is bounded by evidence -------------------------------------
+
+    def test_expires_at_bounds_how_far_residency_carries_forward(self):
+        # A sampler that stopped must not keep attributing new requests to
+        # whatever was loaded when it died.
+        self._obs("a:1", 100.0, ttl=60)          # expires at 160
+        self.assertEqual(samplers.model_at(150.0), "a:1")
+        self.assertIsNone(samplers.model_at(200.0))
+
+    def test_without_a_ttl_residency_carries_only_a_short_grace(self):
+        self._obs("a:1", 100.0)
+        grace = samplers._TRAILING_GRACE_SEC
+        self.assertEqual(samplers.model_at(100.0 + grace - 0.1), "a:1")
+        self.assertIsNone(samplers.model_at(100.0 + grace + 60))
+
+    def test_a_live_ttl_keeps_the_model_attributable(self):
+        self._obs("a:1", 100.0, ttl=1800)        # keep_alive 30m
+        self.assertEqual(samplers.model_at(1500.0), "a:1")
+
+    # Spans, not instants ---------------------------------------------------
+
+    def test_attribute_uses_the_request_span_not_its_completion_instant(self):
+        # GIN stamps a line when the request COMPLETES. A request that ran
+        # while a:1 was loaded must be credited to a:1 even though b:1 is
+        # resident by the time the line is written.
+        self._obs("a:1", 100.0)
+        self._obs("b:1", 140.0, ttl=600)
+        rows = [{"kind": "request", "epoch": 150.0, "latency_s": 60.0, "model": None}]
+        # Completion at 150 falls in b:1, but the span [90, 150] began under a:1.
+        self.assertIsNone(samplers.attribute(rows)[0]["model"],
+                          "a span crossing a swap has no single answer")
+
+    def test_a_span_entirely_inside_one_residency_is_attributed(self):
+        self._obs("a:1", 100.0, ttl=600)
+        rows = [{"kind": "request", "epoch": 150.0, "latency_s": 20.0, "model": None}]
+        self.assertEqual(samplers.attribute(rows)[0]["model"], "a:1")
+
+    def test_a_long_request_is_not_credited_to_a_later_model(self):
+        # The 7-minute /api/pull case: without span logic this was attributed
+        # to whatever happened to be loaded when the pull finished.
+        self._obs("a:1", 0.0)
+        self._obs("b:1", 400.0, ttl=600)
+        rows = [{"kind": "request", "epoch": 440.0, "latency_s": 439.0, "model": None}]
+        self.assertIsNone(samplers.attribute(rows)[0]["model"])
+
+    def test_missing_latency_falls_back_to_a_point_query(self):
+        self._obs("a:1", 100.0, ttl=600)
+        rows = [{"kind": "request", "epoch": 150.0, "latency_s": None, "model": None}]
+        self.assertEqual(samplers.attribute(rows)[0]["model"], "a:1")
 
     def test_attribute_leaves_problems_alone(self):
-        samplers.record_timeline([{"model_key": "a:1"}], now=100.0)
+        self._obs("a:1", 100.0, ttl=600)
         rows = [{"kind": "problem", "epoch": 150.0, "model": None}]
         self.assertIsNone(samplers.attribute(rows)[0]["model"])
+
+    def test_attribute_builds_intervals_once_for_the_whole_batch(self):
+        self._obs("a:1", 100.0, ttl=600)
+        rows = [{"kind": "request", "epoch": 150.0, "latency_s": 1.0, "model": None}
+                for _ in range(50)]
+        with mock.patch.object(samplers, "residency_intervals",
+                               wraps=samplers.residency_intervals) as spy:
+            samplers.attribute(rows)
+        self.assertEqual(spy.call_count, 1)
 
 
 if __name__ == "__main__":

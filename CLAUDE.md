@@ -71,7 +71,15 @@ GIN access lines carry no model name, and the only place the journal names a mod
 
 This is exact under `OLLAMA_MAX_LOADED_MODELS=1` (the current server config). With more than one model resident, `record_timeline` records `None` rather than picking one — degrading to "unknown" is correct; guessing would be a confident lie. Any UI rendering `row["model"]` must label it inferred.
 
-**Known limitation:** GIN logs a line when a request *completes*, so a long request (a multi-minute `/api/pull`) is stamped at its end. Attributing by completion timestamp is wrong for requests spanning a model swap. Using `/api/ps`'s `expires_at` to derive residency *intervals* rather than sample points would fix this.
+Three details make this more than a point lookup, and all three are load-bearing:
+
+- **Spans, not instants.** GIN logs a line when a request *completes*, so a 7-minute `/api/pull` is stamped at minute 7. Every row carries `latency_s`, so `attribute()` queries the span `[epoch - latency_s, epoch]`.
+- **`expires_at` bounds extrapolation.** `residency_intervals()` ends the most recent interval at the keep_alive expiry, so a stalled sampler cannot keep attributing new requests to whatever was loaded when it died. Without a TTL it carries only `_TRAILING_GRACE_SEC`.
+- **A span crossing a swap returns `None`.** Two models each served part of it and neither is the answer.
+
+Intervals are **half-open** `[start, end)`. With inclusive ends, the instant one interval closes and the next opens matches both and reads as ambiguous — every request landing exactly on a sample boundary would go unattributed.
+
+`attribute()` builds the interval list once per batch, not per row.
 
 ## Honesty affordances
 
