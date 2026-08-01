@@ -7,6 +7,8 @@ No dependencies — Python 3 standard library only.
 ## Run
 
 ```bash
+git clone https://github.com/teclara/ollama-dashboard.git
+cd ollama-dashboard
 python3 server.py
 ```
 
@@ -51,9 +53,19 @@ Ollama's API is fast enough that this is not about latency. It exists because po
 
 Requests the dashboard makes to `/api/tags`, `/api/ps` and `/api/version` are filtered from the statistics, but **only when they come from loopback**. Other clients hitting the same endpoints — an Open WebUI container, say — are real consumers and stay visible.
 
-## What the panels show
+## What it shows
 
-**Loaded models** carry a placement badge derived from `size` vs `size_vram`. When they differ, layers spilled to the CPU; the badge shows how many bytes. On a single card running ~30B Q4 models this is the load-health signal that matters most.
+**The verdict is the headline.** The rail's largest line answers "is this box healthy" before you focus your eyes on anything else. It has five states, each carrying its own one-line reason, so the colour is never the only thing telling you what is going on:
+
+| State | Means |
+|---|---|
+| `Serving` | A model is resident and requests arrived in the window |
+| `Ready` | A model is resident, no recent requests |
+| `Idle` | Ollama is reachable, nothing resident |
+| `Degraded` | Ollama answers, but something is wrong: the unit is not active, the journal follower died, GPU telemetry is unavailable, ≥5% of requests are failing, or a job failed |
+| `Offline` | Ollama is not answering at all |
+
+**Resident models** carry a placement badge derived from `size` vs `size_vram`. When they differ, layers spilled to the CPU; the badge shows how many bytes. On a single card running ~30B Q4 models this is the load-health signal that matters most.
 
 **Request statistics** come from Ollama's GIN access lines, which carry an HTTP status, a latency, and a client address. That gives error rate, p50/p95/p99 latency, per-endpoint p95, and a per-client breakdown.
 
@@ -62,6 +74,33 @@ Requests the dashboard makes to `/api/tags`, `/api/ps` and `/api/version` are fi
 Because GIN logs a line when a request *completes*, the span matters: a request is matched over `[completed - latency, completed]`, not at its end timestamp. A request whose span crosses a model swap reports no model rather than naming the one that happened to be loaded when it finished. Residency is never carried past the keep_alive expiry, so a stalled sampler cannot keep attributing new traffic to a stale model. Exact under `OLLAMA_MAX_LOADED_MODELS=1`; above that it records "unknown" rather than guessing.
 
 **Follower health is visible.** The journal follower is a long-lived `journalctl -f`. If the process dies the dashboard says so, rather than presenting a frozen window as current. It keys on the subprocess rather than on line arrival — a healthy follower watching an idle server reads nothing for minutes, and warning on that is a false alarm.
+
+## Interface
+
+The dashboard is built to be read from a few feet away on an always-on second monitor, and worked in up close when something needs doing. Most of the decisions below follow from that one fact.
+
+**The rail never moves.** Its DOM is built once and the poll loop writes only text values and bar widths — it never inserts, removes or reorders a node. Numerics are fixed-width tabular figures, and any text whose length varies with the data truncates rather than wraps. Without that, a GPU going from `11W` to `111W` rewraps a line and shoves every meter below it down the page, which is exactly what fixed geometry exists to prevent. The full untruncated value is always on **Host**.
+
+**Telemetry is smoothed, faults are not.** Continuous readings are damped before display, because a raw value at poll rate is visual noise in peripheral vision. Anything that signals a fault — service state, error counts, follower health — is written exactly as it arrives, undamped and immediately.
+
+**Colour means something specific.** Four data roles are pinned to what they measure and are identical in every bar, sparkline and label:
+
+| Role | Carries |
+|---|---|
+| compute | GPU utilization, host CPU |
+| memory | VRAM, host RAM |
+| i/o | PCIe rx and tx |
+| requests | request rate, latency percentiles, job progress |
+
+Semantic colour (good / warning / bad) sits **outside** those four hues, so an alert can never be mistaken for a data series. Hue placement is forced by adjacency: compute and memory share the GPU sparkline so they sit 95° apart, and requests sits beside error counts so it sits 120° from bad. There is deliberately **no chromatic accent** — primary actions and selection use ink, because a fifth hue would read as a fifth data role.
+
+**Both themes are first class.** An always-on monitor follows the room, so `prefers-color-scheme` decides by default and the rail's Theme button cycles auto → light → dark, persisting your choice. Data hues shift lightness between themes to hold contrast at small sizes.
+
+**Type has a hard 14px floor.** At viewing distance the usual 10–12px label sizes are unreadable. The floor compresses the bottom of the scale, so the smallest steps separate by weight, case and colour rather than size.
+
+**Percentage charts keep a fixed 0–100% scale** with gridlines, rather than auto-scaling. Auto-scaling would make 27% VRAM look full.
+
+**Keyboard and accessibility.** `⌘K` / `Ctrl-K` opens the command palette, which can jump between sections and run actions (load, unload, download, clear jobs, switch theme) directly. Sections are a proper tablist with arrow-key navigation. Focus is always visible, wide tables become keyboard-scrollable only when they actually overflow, status is never carried by colour alone, and `prefers-reduced-motion` removes transitions.
 
 ## Operations
 
