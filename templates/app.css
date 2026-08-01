@@ -287,9 +287,31 @@ button,input,select,textarea{font:inherit;color:inherit}
 }
 .verdict-why{
   margin-top:6px;color:var(--ink-2);font-size:var(--t-sm);line-height:1.4;
-  /* Two lines reserved so a changing reason cannot shove the rail down. */
-  min-height:2.8em;
+  /* Exactly two lines, always. min-height was not enough: a three-line reason
+     still grew the box and pushed the whole rail down. */
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden;height:2.8em;
 }
+
+/* ---- reflow guard --------------------------------------------------------
+   Nothing in the rail may change height when its value changes. A GPU going
+   from 11W to 111W rewrapped the compute detail onto a second line and shoved
+   every meter below it down the page, which is precisely what the fixed
+   geometry exists to prevent. So: single-line text truncates rather than
+   wraps, pill rows never wrap, and the model name gets a permanent two-line
+   box. The full, untruncated value is always on the Host tab. */
+.rail .meter-detail,
+.rail .meter-label,
+.rail .resident-extra,
+.rail .job-strip-name,
+.rail .job-strip-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rail .meter-head{flex-wrap:nowrap}
+.rail .meter-value,.rail .verdict-word{white-space:nowrap}
+.rail .resident-name{
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+  overflow:hidden;height:2.6em;
+}
+.rail .resident-meta{flex-wrap:nowrap;overflow:hidden}
 
 .rail-sep{height:1px;margin:0 20px;background:var(--line)}
 

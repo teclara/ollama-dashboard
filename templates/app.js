@@ -436,7 +436,7 @@ function renderRailLive(s){
     setVal(RAIL.compute, util == null ? EMDASH : String(Math.round(util)));
     setBar(RAIL.compute, util);
     setDetail(RAIL.compute, [
-      g.name || 'GPU',
+      shortGpu(g.name),
       g.temp != null ? g.temp + '°C' : null,
       g.power != null ? Math.round(g.power) + 'W' : null,
     ].filter(Boolean).join(' · '));
@@ -463,7 +463,7 @@ function renderRailLive(s){
     setVal(RAIL.io, shown == null ? EMDASH : String(Math.round(shown)));
     setBar(RAIL.io, cap ? (total / cap * 100) : 0);
     setDetail(RAIL.io, 'rx ' + (lat.rx_mbs || 0) + ' · tx ' + (lat.tx_mbs || 0)
-      + ' MB/s' + (cap ? ' · cap ' + Math.round(cap) + ' MB/s' : ''));
+      + (cap ? ' · cap ' + Math.round(cap) : '') + ' MB/s');
   }
 
   const h = s.host || {};
@@ -475,6 +475,12 @@ function renderRailLive(s){
   setBar(RAIL.ram, ram);
 
   setText(RAIL.clock, String(s.now || '').slice(11) || EMDASH);
+}
+
+// The rail gives this one line. "NVIDIA GeForce RTX 5090" spends most of it on
+// words that identify nothing; the full device string is on the Host tab.
+function shortGpu(name){
+  return (name || 'GPU').replace(/^NVIDIA\s+/i, '').replace(/^GeForce\s+/i, '');
 }
 
 function linkCapMbs(g){
@@ -489,7 +495,7 @@ function verdictOf(s){
   if(!s) return {word:'Starting', why:'Waiting for the first sample.', role:'neutral'};
   if(s.ollama_ok === false){
     return {word:'Offline', role:'bad',
-            why:'Ollama is not answering. Nothing can be served or loaded.'};
+            why:'Ollama is not answering. Nothing can be served.'};
   }
   const faults = [];
   const svc = s.service || {};
@@ -509,14 +515,14 @@ function verdictOf(s){
   const loaded = s.loaded || [];
   if(!loaded.length){
     return {word:'Idle', role:'neutral',
-            why:'No model is resident. Ollama is reachable and ready to load one.'};
+            why:'No model resident. Ollama is ready to load one.'};
   }
   if(st.count){
     return {word:'Serving', role:'good',
-            why: plural(st.count, 'request', 'requests') + ' in the last 5 minutes, p95 ' + fmtDur(st.p95_s) + '.'};
+            why: plural(st.count, 'request', 'requests') + ' in 5 min · p95 ' + fmtDur(st.p95_s)};
   }
   return {word:'Ready', role:'good',
-          why: plural(loaded.length, 'model is', 'models are') + ' resident. No requests in the last 5 minutes.'};
+          why: plural(loaded.length, 'model', 'models') + ' resident · no requests in 5 min'};
 }
 
 function renderRailState(s){
