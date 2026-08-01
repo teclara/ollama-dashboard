@@ -1,634 +1,443 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ollama Dashboard</title>
-<link rel="stylesheet" href="/assets/app.css"></head>
-<body>
-<a class="skip-link" href="#workspace-main">Skip to workspace</a>
-<div class="app-shell">
-  <aside class="sidebar" id="sidebar" data-open="false">
-    <div class="brand"><span class="brand-mark">OL</span><div><div class="brand-name">Ollama</div><div class="brand-context">Operations</div></div></div>
-    <nav class="workspace-nav" aria-label="Workspaces">
-      <div class="nav-group">Monitor</div>
-      <a href="/#overview" data-workspace-link><span class="nav-glyph">01</span>Overview</a>
-      <a href="/#activity" data-workspace-link><span class="nav-glyph">02</span>Activity</a>
-      <div class="nav-group">Operate</div>
-      <a href="/control#models" data-workspace-link><span class="nav-glyph">03</span>Models</a>
-      <a href="/control#performance" data-workspace-link><span class="nav-glyph">04</span>Performance</a>
-      <div class="nav-group">Host</div>
-      <a href="/#system" data-workspace-link><span class="nav-glyph">05</span>System</a>
-      <a href="/control#settings" data-workspace-link><span class="nav-glyph">06</span>Settings</a>
-    </nav>
-    <div class="sidebar-foot">Local server · :11434</div>
-  </aside>
-  <button class="backdrop" id="nav-backdrop" data-open="false" aria-label="Close navigation"></button>
-  <header class="topbar">
-    <button class="menu-toggle" id="menu-toggle" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button>
-    <div class="topbar-title"><h1 id="workspace-title">Overview</h1><p id="workspace-subtitle">Live operating state and work requiring attention</p></div>
-    <div class="topbar-status" aria-label="Current status">
-      <span class="status-chip" id="top-ollama">Checking Ollama</span>
-      <span class="status-chip" id="top-models">0 loaded</span>
-      <span class="status-chip" id="top-updated">Waiting for sample</span>
-    </div>
-  </header>
-  <main class="content" id="workspace-main" tabindex="-1">
-    <div class="alert-stack" id="poll-status" role="alert"></div>
-    <div class="alert-stack" id="banner" role="alert"></div>
-    <section class="workspace" data-workspace="overview" aria-label="Overview">
-      <div class="health-strip" aria-label="Server health summary">
-        <div class="health-item"><span class="health-label">Service</span><span class="health-value" id="health-service">Checking</span><span class="health-detail" id="health-service-detail">ollama.service</span></div>
-        <div class="health-item"><span class="health-label">GPU</span><span class="health-value" id="health-gpu">Checking</span><span class="health-detail" id="health-gpu-detail">Compute and VRAM</span></div>
-        <div class="health-item"><span class="health-label">Journal</span><span class="health-value" id="health-journal">Checking</span><span class="health-detail" id="health-journal-detail">Request evidence</span></div>
-        <div class="health-item"><span class="health-label">Model store</span><span class="health-value" id="health-disk">Checking</span><span class="health-detail" id="health-disk-detail">Local storage</span></div>
-      </div>
-      <div class="workspace-grid">
-        <div class="card primary table-region span-8"><div class="card-head"><h3>Loaded models</h3><a href="/control#models" class="meta" style="margin:0">Manage models</a></div><div id="loaded"></div></div>
-        <div class="card span-4"><div class="card-head"><h3>Active work</h3><a href="/control#models" class="meta" style="margin:0">Open jobs</a></div><div id="overview-jobs"></div></div>
-      </div>
-    </section>
-    <section class="workspace" data-workspace="activity" aria-label="Activity" hidden>
-      <div class="workspace-grid">
-        <div class="card span-3"><h3>Request summary <span class="context">5 min</span></h3><div id="stats"></div></div>
-        <div class="card table-region span-5"><h3>Clients <span class="context">5 min</span></h3><div id="activity"></div></div>
-        <div class="card table-region span-4"><h3>Top endpoints <span class="context">5 min</span></h3><div id="endpoints"></div></div>
-        <div class="card table-region bounded span-8"><div class="card-head"><h3>Recent requests</h3><span class="meta" id="request-freshness" style="margin:0">Waiting for journal</span></div><div id="reqs"></div></div>
-        <div class="card table-region bounded span-4"><h3>Journal problems</h3><div id="problems"></div></div>
-      </div>
-    </section>
-    <section class="workspace" data-workspace="system" aria-label="System" hidden>
-      <div class="workspace-grid">
-        <div class="card primary span-7"><h3>GPU</h3><div id="gpu"></div><div id="spark"></div><div id="gpuprocs" class="table-region medium"></div></div>
-        <div class="card span-5"><h3>Host and PCIe / Oculink</h3><div id="pcie"></div></div>
-        <div class="card span-6"><h3>Service and storage</h3><div id="service"></div></div>
-        <div class="card span-6"><h3>Tailscale</h3><div id="tailscale"></div></div>
-      </div>
-    </section>
-  </main>
-</div>
-<script src="/assets/app.js"></script>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Ollama Operations</title>
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/app.css">
 <script>
-AppShell.init('overview');
-// Refresh cadences. The live payload is small and served from memory, so it
-// can run an order of magnitude faster than the full state.
-const LIVE_MS = 100;
-const STATE_MS = 2000;
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-const fmt = (n,d=1) => Number(n).toFixed(d);
-const el = id => document.getElementById(id);
-// GIN latencies arrive in seconds and span microseconds to minutes.
-const fmtDur = s => s == null ? '—'
-  : s < 1e-3 ? (s*1e6).toFixed(0)+'\u00b5s'
-  : s < 1    ? (s*1e3).toFixed(1)+'ms'
-  : s < 60   ? s.toFixed(2)+'s'
-  : Math.floor(s/60)+'m'+Math.round(s%60)+'s';
-
-function ce(tag, opts={}, children=[]){
-  const e = document.createElement(tag);
-  if(opts.cls) e.className = opts.cls;
-  if(opts.text != null) e.textContent = opts.text;
-  if(opts.style) e.setAttribute('style', opts.style);
-  if(opts.attrs) for(const [k,v] of Object.entries(opts.attrs)) e.setAttribute(k,v);
-  for(const c of children){ if(c) e.appendChild(c); }
-  return e;
-}
-function svg(tag, attrs={}){
-  const e = document.createElementNS(SVG_NS, tag);
-  for(const [k,v] of Object.entries(attrs)) e.setAttribute(k, v);
-  return e;
-}
-function row(cells){
-  const tr = document.createElement('tr');
-  for(const c of cells){
-    const td = document.createElement('td');
-    if(c && typeof c === 'object' && c.cls === 'path'){ td.className = 'path'; td.textContent = c.text; }
-    else if(c instanceof Node) td.appendChild(c);
-    else td.textContent = (c == null ? '—' : String(c));
-    tr.appendChild(td);
-  }
-  return tr;
-}
-function table(headers, rows){
-  const t = document.createElement('table');
-  const thead = document.createElement('thead');
-  const headRow = document.createElement('tr');
-  for(const h of headers){
-    const th = document.createElement('th');
-    th.scope = 'col'; th.textContent = h; headRow.appendChild(th);
-  }
-  thead.appendChild(headRow);
-  const tbody = document.createElement('tbody');
-  for(const r of rows) tbody.appendChild(r);
-  t.append(thead, tbody);
-  return t;
-}
-function fmtBytes(b){
-  if(!b) return '—';
-  const u=['B','KB','MB','GB','TB']; let i=0; while(b>=1024 && i<u.length-1){b/=1024;i++;}
-  return fmt(b)+' '+u[i];
-}
-function fmtUptime(s){
-  if(s == null) return '—';
-  const d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60);
-  if(d) return `${d}d ${h}h`;
-  if(h) return `${h}h ${m}m`;
-  if(m) return `${m}m ${s%60}s`;
-  return `${s}s`;
-}
-function replace(target, child){
-  target.textContent = '';
-  if(Array.isArray(child)) child.forEach(c => target.appendChild(c));
-  else if(child) target.appendChild(child);
-}
-function statRow(k, v, bad){
-  const val = ce('span', {cls: bad ? 'v bad' : 'v', text: v==null?'—':String(v)});
-  return ce('div', {cls:'stat'}, [ce('span',{cls:'k',text:k}), val]);
-}
-function setChip(target, text, state=''){
-  target.textContent = text;
-  target.className = 'status-chip' + (state ? ' '+state : '');
-}
-
-// Throttle flags flip on and off between consecutive samples, so at a 100ms
-// refresh a raw read would strobe. Latch each reason for THROTTLE_HOLD_MS past
-// its last sighting so the indicator reads as steady-on rather than flickering.
-const THROTTLE_HOLD_MS = 2000;
-const _throttleSeen = new Map();
-
-function holdThrottle(reasons){
-  const now = Date.now();
-  for(const r of reasons) _throttleSeen.set(r, now);
-  const active = [];
-  for(const [r, t] of _throttleSeen){
-    if(now - t <= THROTTLE_HOLD_MS) active.push(r);
-    else _throttleSeen.delete(r);
-  }
-  return active;
-}
-
-function sparkline(history){
-  const wrap = ce('div');
-  if(!history.length){ wrap.appendChild(ce('div',{cls:'empty',text:'collecting samples…'})); return wrap; }
-  const W=600, H=60, pad=2;
-  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none','aria-hidden':'true',focusable:'false'});
-  const n = Math.max(history.length, 2);
-  const xStep = (W - 2*pad) / (n-1);
-  function poly(getter, color, fill){
-    const pts = history.map((p,i) => {
-      const v = Math.max(0, Math.min(100, getter(p)));
-      const x = pad + i*xStep, y = pad + (H-2*pad) * (1 - v/100);
-      return `${x},${y}`;
-    }).join(' ');
-    if(fill){
-      const area = svg('polygon', {points:`${pad},${H-pad} ${pts} ${pad+(n-1)*xStep},${H-pad}`,fill:color,opacity:'0.15'});
-      s.appendChild(area);
-    }
-    s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
-  }
-  poly(p => p.vram_pct, 'var(--accent)', true);
-  poly(p => p.util, 'var(--accent2)', false);
-  wrap.appendChild(s);
-  const last = history[history.length-1];
-  const lab = ce('div', {cls:'spark-label'}, [
-    ce('span',{cls:'vram',text:`vram ${fmt(last.vram_pct,0)}%`}),
-    ce('span',{cls:'util',text:`util ${last.util}%`}),
-    ce('span',{text:`${history.length} samples`}),
-  ]);
-  wrap.appendChild(lab);
-  return wrap;
-}
-
-function pcieSparkline(history, capMbs){
-  const wrap = ce('div');
-  if(!history.length){ wrap.appendChild(ce('div',{cls:'empty',text:'collecting samples…'})); return wrap; }
-  const W=600, H=60, pad=2;
-  const maxObserved = Math.max(...history.flatMap(p => [p.rx, p.tx]), 1);
-  const scale = Math.max(maxObserved, capMbs ? capMbs * 0.1 : 0); // dynamic, but at least 10% of cap
-  const s = svg('svg', {class:'spark',viewBox:`0 0 ${W} ${H}`,preserveAspectRatio:'none','aria-hidden':'true',focusable:'false'});
-  const n = Math.max(history.length, 2);
-  const xStep = (W - 2*pad) / (n-1);
-  function poly(getter, color, fill){
-    const pts = history.map((p,i) => {
-      const v = Math.min(1, getter(p) / scale);
-      const x = pad + i*xStep, y = pad + (H-2*pad) * (1 - v);
-      return `${x},${y}`;
-    }).join(' ');
-    if(fill){
-      s.appendChild(svg('polygon', {points:`${pad},${H-pad} ${pts} ${pad+(n-1)*xStep},${H-pad}`,fill:color,opacity:'0.15'}));
-    }
-    s.appendChild(svg('polyline', {points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));
-  }
-  poly(p => p.rx, 'var(--good)', true);   // green = rx (host→gpu)
-  poly(p => p.tx, 'var(--warn)', false);  // amber = tx (gpu→host)
-  wrap.appendChild(s);
-  const last = history[history.length-1];
-  wrap.appendChild(ce('div', {cls:'spark-label'}, [
-    ce('span',{style:'color:var(--good)',text:`rx ${last.rx} MB/s`}),
-    ce('span',{style:'color:var(--warn)',text:`tx ${last.tx} MB/s`}),
-    ce('span',{text:`peak ${maxObserved} MB/s`}),
-  ]));
-  return wrap;
-}
-
-// The dashboard runs two loops. /api/live is a small, sampler-backed payload
-// carrying only what visibly moves (GPU, host, PCIe) and is polled many times a
-// second; /api/state carries the model lists and request panels, which change
-// on the order of seconds to minutes. Both are served from memory, so neither
-// costs the server a subprocess.
-
-// gpu_versions arrives on the slow payload but is rendered by the fast one.
-let GPU_VERSIONS = {};
-
-function renderLive(s){
-    // GPU
-    const g = s.gpu;
-    if(g.error){
-      replace(el('gpu'), ce('div', {cls:'empty', text:g.error}));
-      el('health-gpu').textContent = 'Unavailable';
-      el('health-gpu-detail').textContent = g.error;
-    }
-    else {
-      const pct = (g.mem_used/g.mem_total*100);
-      el('health-gpu').textContent = `${g.util}% util · ${fmt(pct,0)}% VRAM`;
-      el('health-gpu-detail').textContent = g.name || 'GPU sampled';
-      const vbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pct}%`})]);
-      const pwrPct = g.power_limit ? Math.min(100, g.power/g.power_limit*100) : 0;
-      const pbar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${pwrPct}%;background:var(--warn)`})]);
-      const tempText = g.temp_mem == null ? `${g.temp}°C` : `${g.temp}°C (mem ${g.temp_mem}°C)`;
-      const ver = GPU_VERSIONS || {};
-      const driverText = (ver.driver || ver.cuda)
-        ? `driver ${ver.driver || '—'} · cuda ${ver.cuda || '—'}`
-        : null;
-      // Throttling is shown by colouring the value it applies to, never by
-      // inserting a row — an appearing/disappearing row shoves the whole page
-      // down. holdThrottle also latches the state briefly, because the power
-      // cap flickers on and off between samples and at 10Hz a raw read would
-      // strobe the colour several times a second.
-      const active = holdThrottle(g.throttle_reasons || []);
-      const powerThrottled = active.some(r => r === 'sw_power_cap' || r === 'hw_power_brake');
-      const tempThrottled = active.some(r => r.includes('thermal'));
-      // Anything that maps to neither power nor temperature still needs a home,
-      // so it rides along on the utilization row rather than vanishing.
-      const otherThrottled = active.filter(
-        r => !r.includes('thermal') && r !== 'sw_power_cap' && r !== 'hw_power_brake');
-
-      // Reasons are appended to the value text, not shown on hover: this card
-      // is rebuilt every 100ms, so a native title tooltip would be destroyed
-      // before the browser's hover delay ever elapsed.
-      const powerText = g.power_limit
-        ? `${fmt(g.power)} / ${fmt(g.power_limit,0)} W (${fmt(pwrPct,0)}%)`
-        : `${fmt(g.power)} W`;
-
-      const rows = [
-        statRow('device', g.name),
-      ];
-      if(driverText) rows.push(statRow('driver', driverText));
-      rows.push(
-        statRow('vram', `${g.mem_used}/${g.mem_total} MB (${fmt(pct)}%)`),
-        vbar,
-        statRow('utilization', g.util + '%' + (otherThrottled.length ? ' · ' + otherThrottled.join(', ') : ''),
-                otherThrottled.length > 0),
-        statRow('temperature', tempText + (tempThrottled ? ' · thermal throttle' : ''), tempThrottled),
-        statRow('fan', g.fan == null ? '—' : g.fan+'%'),
-        statRow('power', powerText + (powerThrottled ? ' · power capped' : ''), powerThrottled),
-        pbar,
-      );
-      if(powerThrottled) pbar.firstChild.style.background = 'var(--bad)';
-      replace(el('gpu'), rows);
-    }
-    replace(el('spark'), sparkline(s.gpu_history || []));
-
-    // PCIe link data comes from the GPU sample, so do not render a synthetic
-    // "gen undefined" link when that sample failed. Host data remains useful.
-    const h = s.host || {};
-    const cpuBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.cpu_pct||0}%;background:var(--accent)`})]);
-    const memBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${h.mem_pct||0}%;background:var(--good)`})]);
-    const subhead = label => ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--border)', text: label});
-    const hostRows = [
-      subhead('host'),
-      statRow('cpu', h.cpu_pct == null ? '—' : `${fmt(h.cpu_pct,1)}% (${h.ncpu} cores · load ${h.load_1 ?? '—'})`),
-      cpuBar,
-      statRow('ram', h.mem_total ? `${fmtBytes(h.mem_used)} / ${fmtBytes(h.mem_total)} (${fmt(h.mem_pct,1)}%)` : '—'),
-      memBar,
-    ];
-    if(g.error){
-      replace(el('pcie'), [ce('div',{cls:'empty',text:'PCIe unavailable: '+g.error}), ...hostRows]);
-    } else {
-      const pc = s.pcie || {};
-      const lat = pc.latest || {};
-      const negotiated = `gen ${g.pcie_gen}.0 x${g.pcie_width}`;
-      const max = `gen ${g.pcie_gen_max}.0 x${g.pcie_width_max}`;
-      // Theoretical bandwidth: gen N → ~(N*1) GB/s/lane (rough: g1=0.25, g2=0.5, g3=1, g4=2, g5=4)
-      const lanePerGen = {1:250,2:500,3:985,4:1969,5:3938};
-      const linkCap = (lanePerGen[g.pcie_gen]||0) * g.pcie_width; // MB/s
-      const totalMbs = (lat.rx_mbs||0) + (lat.tx_mbs||0);
-      const linkPct = linkCap ? Math.min(100, totalMbs/linkCap*100) : 0;
-      const totalBar = ce('div', {cls:'bar'}, [ce('div', {style:`width:${linkPct}%;background:var(--accent2)`})]);
-      replace(el('pcie'), [
-      ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:'oculink'}),
-      statRow('link', negotiated + (negotiated===max ? '' : ` (max ${max})`)),
-      statRow('link cap', linkCap ? `~${(linkCap/1024).toFixed(2)} GB/s` : '—'),
-      statRow('rx', (lat.rx_mbs||0) + ' MB/s'),
-      statRow('tx', (lat.tx_mbs||0) + ' MB/s'),
-      statRow('total', totalMbs + ' MB/s'),
-      totalBar,
-      pcieSparkline(pc.history || [], linkCap),
-      ...hostRows,
-      ]);
-    }
-
-    setChip(el('top-updated'), 'Updated '+String(s.now).slice(11), 'good');
-}
-
-function renderState(s){
-    GPU_VERSIONS = s.gpu_versions || {};
-    setChip(el('top-ollama'), s.ollama_ok === false ? 'Ollama unavailable' : 'Ollama connected',
-            s.ollama_ok === false ? 'bad' : 'good');
-    setChip(el('top-models'), `${s.loaded.length} loaded`, s.loaded.length ? 'good' : '');
-    const sv = s.service, dk = s.disk;
-    el('health-service').textContent = sv.active || 'unknown';
-    el('health-service-detail').textContent = sv.engine && sv.engine.version
-      ? `Ollama ${sv.engine.version} · up ${fmtUptime(sv.uptime_s)}` : 'ollama.service';
-    el('health-journal').textContent = s.log_follower_ok === false ? 'Follower stopped' : 'Following';
-    el('health-journal-detail').textContent = s.log_follower_ok === false
-      ? 'Request statistics are frozen' : 'Request evidence live';
-    el('health-disk').textContent = dk.models_size
-      ? (dk.approximate ? `≥ ${fmtBytes(dk.models_size)}` : fmtBytes(dk.models_size)) : 'Unavailable';
-    el('health-disk-detail').textContent = dk.orphan_bytes
-      ? `${fmtBytes(dk.orphan_bytes)} reclaimable` : dk.approximate ? 'Lower-bound estimate' : 'Model store';
-
-    // GPU processes — its own container, so the 100ms live loop redrawing the
-    // sparkline cannot wipe it between slow ticks.
-    const procs = s.gpu_processes || [];
-    if(procs.length){
-      const procWrap = ce('div', {style:'margin-top:12px;padding-top:10px;border-top:1px solid var(--border)'});
-      procWrap.appendChild(ce('div', {style:'font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px', text:`processes (${procs.length})`}));
-      const ptable = table(['pid','process','vram'], procs.map(p => row([p.pid, {cls:'path', text:p.name}, fmtBytes(p.vram_mb*1024*1024)])));
-      procWrap.appendChild(ptable);
-      replace(el('gpuprocs'), procWrap);
-    } else { replace(el('gpuprocs'), null); }
-
-    // Banners. Both exist so a broken input is never rendered as real data:
-    // an unreachable server empties the model panels, and a dead journal
-    // follower would otherwise present a frozen request window as current.
-    const warn = [];
-    if(s.ollama_ok === false){
-      warn.push('Ollama is unreachable. Model data is unavailable; check OLLAMA_URL and ollama.service.');
-    }
-    // Keyed on the subprocess, not on silence. An idle Ollama produces no
-    // lines for minutes, which is not a fault — warning on that made the
-    // banner cry wolf on a perfectly healthy follower.
-    if(s.log_follower_ok === false){
-      warn.push('The journal follower is not running. Request statistics have stopped updating.');
-    }
-    replace(el('banner'), warn.length
-      ? ce('div',{cls:'alert bad'},
-           warn.map(t => ce('div',{text:t})))
-      : null);
-
-    // Loaded
-    if(!s.loaded.length){
-      replace(el('loaded'), ce('div', {cls:'empty'}, [
-        ce('span',{text:'No models are loaded. '}),
-        ce('a',{text:'Load a model',attrs:{href:'/control#models'}}),
-        ce('span',{text:' to begin serving requests.'}),
-      ]));
-    }
-    else {
-      const rows = s.loaded.map(m => {
-        const caps = ce('span', {}, [
-          m.vision ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'vision'}) : null,
-          m.tools ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'tools'}) : null,
-          m.thinking ? ce('span',{cls:'pill dim',style:'margin-right:4px',text:'thinking'}) : null,
-          m.embedding ? ce('span',{cls:'pill dim',text:'embed'}) : null,
-        ]);
-        // size vs size_vram is the load-health signal Ollama gives and LM Studio
-        // did not: when they differ, layers spilled to the CPU. Colour is paired
-        // with text so the state is never carried by hue alone.
-        const placement = m.fully_gpu
-          ? ce('span',{cls:'pill good',text:'GPU'})
-          : ce('span',{cls:'pill warn',text:'CPU +'+fmtBytes(m.cpu_bytes)});
-        const ctx = m.context
-          ? (m.max_context
-              ? `${(m.context/1024).toFixed(0)}K / ${(m.max_context/1024).toFixed(0)}K`
-              : `${(m.context/1024).toFixed(0)}K`)
-          : '—';
-        return row([
-          m.model_key,
-          m.arch || '—',
-          m.quant || '—',
-          fmtBytes(m.size),
-          placement,
-          ctx,
-          m.ttl_s == null ? 'none' : fmtUptime(m.ttl_s),
-          caps,
-        ]);
-      });
-      replace(el('loaded'), table(
-        ['model','arch','quant','size','placement','ctx','ttl',''], rows));
-    }
-
-    // Stats. Ollama's GIN access lines carry status, latency and client, none
-    // of which LM Studio's logs had — hence the percentiles and error rate.
-    const st = s.stats_5m;
-    const errPill = st.error_count
-      ? ce('span',{cls:'pill bad',text:`${st.error_count} (${st.error_rate}%)`})
-      : ce('span',{cls:'pill good',text:'0'});
-    replace(el('stats'), [
-      statRow('requests', st.count),
-      statRow('rps', st.rps),
-      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'errors'}), ce('span',{cls:'v'},[errPill])]),
-      statRow('p50', fmtDur(st.p50_s)),
-      statRow('p95', fmtDur(st.p95_s)),
-      statRow('p99', fmtDur(st.p99_s)),
-    ]);
-
-    // Service
-    const activePill = sv.active === 'active'
-      ? ce('span',{cls:'pill good',text:sv.active})
-      : ce('span',{cls:'pill bad',text:sv.active});
-    const eng = sv.engine || {};
-    const engText = eng.name ? `${eng.name} @ ${eng.version}` : '—';
-    replace(el('service'), [
-      ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'ollama.service'}), ce('span',{cls:'v'},[activePill])]),
-      statRow('engine', engText),
-      statRow('uptime', fmtUptime(sv.uptime_s)),
-      statRow('rss', sv.rss_kb ? fmtBytes(sv.rss_kb*1024) : '—'),
-      // approximate means we could not read the store and are summing
-      // /api/tags instead, which counts only referenced blobs. Showing that
-      // as an exact figure would understate real usage without saying so.
-      statRow('models size', dk.models_size
-        ? (dk.approximate ? `≥ ${fmtBytes(dk.models_size)}` : fmtBytes(dk.models_size))
-        : '—'),
-      ...(dk.approximate ? [ce('div',{cls:'meta',style:'text-align:left',
-            text:'lower bound — no read access to the model store'})] : []),
-      ...(dk.orphan_bytes ? [statRow('reclaimable', fmtBytes(dk.orphan_bytes))] : []),
-      statRow('disk free', dk.fs_total ? `${fmtBytes(dk.fs_free)} / ${fmtBytes(dk.fs_total)}` : '—'),
-      statRow('dashboard up', fmtUptime(s.dash_uptime_s)),
-    ]);
-
-    // Tailscale
-    const ts = s.tailscale;
-    if(!ts.up){
-      replace(el('tailscale'), [statRow('status', ts.error || 'down')]);
-    } else {
-      replace(el('tailscale'), [
-        ce('div',{cls:'stat'},[ce('span',{cls:'k',text:'status'}), ce('span',{cls:'v'},[ce('span',{cls:'pill good',text:'up'})])]),
-        statRow('hostname', ts.hostname),
-        statRow('dns', ts.dnsname),
-        statRow('ip', ts.ip),
-        statRow('tailnet', ts.tailnet),
-        statRow('peers online', `${ts.peers_online}/${ts.peers_total}`),
-      ]);
-    }
-
-    // Clients — GIN access lines carry the caller's address, which LM Studio's
-    // logs never did.
-    const clients = s.by_client || [];
-    if(!clients.length){ replace(el('activity'), ce('div',{cls:'empty',text:'no recent clients'})); }
-    else {
-      const rows = clients.map(c => row([
-        {cls:'path', text:c.client},
-        c.count,
-        c.errors ? ce('span',{cls:'pill bad',text:String(c.errors)}) : '0',
-        fmtDur(Math.max(0, (Date.now()/1000) - c.last_seen)) + ' ago',
-      ]));
-      replace(el('activity'), table(['client','requests','errors','last seen'], rows));
-    }
-
-    // Top endpoints
-    if(!s.top_endpoints.length){ replace(el('endpoints'), ce('div',{cls:'empty',text:'no recent activity'})); }
-    else {
-      const rows = s.top_endpoints.map(e => row([
-        {cls:'path',text:e.path},
-        e.count,
-        e.errors ? ce('span',{cls:'pill bad',text:String(e.errors)}) : '0',
-        fmtDur(e.p95_s),
-      ]));
-      replace(el('endpoints'), table(['path','count','errors','p95'], rows));
-    }
-
-    // Recent requests
-    if(!s.requests.length){ replace(el('reqs'), ce('div',{cls:'empty',text:'no recent requests'})); }
-    else {
-      const rows = s.requests.map(r => {
-        const st2 = r.status;
-        const pill = st2 == null ? '—'
-          : ce('span',{cls: st2 >= 400 ? 'pill bad' : 'pill good', text:String(st2)});
-        return row([
-          r.ts,
-          r.method || ce('span',{cls:'pill dim',text:r.kind}),
-          {cls:'path', text: r.path || '—'},
-          pill,
-          fmtDur(r.latency_s),
-          {cls:'path', text: r.client || '—'},
-          {cls:'path', text: r.model || '—'},
-        ]);
-      });
-      // "model (inferred)" is deliberate: GIN lines carry no model name, so
-      // this column comes from which model was resident at that timestamp.
-      replace(el('reqs'), table(
-        ['time','method','endpoint','status','latency','client','model (inferred)'], rows));
-    }
-
-    el('request-freshness').textContent = s.log_follower_ok === false
-      ? 'Follower stopped' : s.log_age_s == null ? 'No request evidence yet'
-      : `Latest displayed request ${fmtUptime(Math.round(s.log_age_s))} ago`;
-    const problems = s.problems || [];
-    if(!problems.length){
-      replace(el('problems'), ce('div',{cls:'empty',text:'No recent warnings or errors.'}));
-    } else {
-      replace(el('problems'), table(['time','level','message'], problems.map(problem => row([
-        problem.ts || '—',
-        ce('span',{cls:'pill '+(problem.level === 'ERROR' ? 'bad' : 'warn'),text:problem.level || 'WARN'}),
-        problem.message || '—',
-      ]))));
-    }
-}
-
-const POLL_ERRORS = {live:null, state:null, jobs:null};
-function setPollError(name, message){
-  POLL_ERRORS[name] = message;
-  const errors = Object.entries(POLL_ERRORS).filter(([,value]) => value);
-  replace(el('poll-status'), errors.length
-    ? ce('div',{cls:'alert bad'},
-        errors.map(([stream, value]) => ce('div',{text:`${stream} polling failed: ${value}`})))
-    : null);
-}
-
-function renderOverviewJobs(jobs){
-  const entries = Object.entries(jobs).sort((a,b) => (b[1].started||0) - (a[1].started||0));
-  const active = entries.filter(([,job]) => !job.done);
-  const failed = entries.filter(([,job]) => job.error);
-  const visible = [...active, ...failed.filter(item => !active.includes(item))].slice(0,4);
-  if(!visible.length){
-    replace(el('overview-jobs'), ce('div',{cls:'empty',text:'No active or failed jobs.'}));
-    return;
-  }
-  replace(el('overview-jobs'), table(['job','kind','state'], visible.map(([name, job]) => row([
-    job.kind === 'benchmark' ? 'Benchmark suite' : name,
-    job.kind,
-    ce('span',{cls:'pill '+(job.error ? 'bad' : 'warn'),text:job.error ? 'failed' : job.status}),
-  ]))));
-}
-
-// One timer, request, and generation per stream prevents overlap and ignores
-// responses invalidated when polling pauses in a hidden tab.
-function pollStream(name, url, render, intervalMs){
-  let timer = null, request = null, generation = 0, pending = false;
-  function schedule(delay){
-    if(document.hidden || timer !== null || request) return;
-    timer = setTimeout(run, delay);
-  }
-  async function run(){
-    timer = null;
-    if(document.hidden) return;
-    if(request){ pending = true; return; }
-    const current = ++generation;
-    const controller = new AbortController();
-    request = controller;
-    try{
-      const r = await fetch(url, {signal:controller.signal});
-      if(!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      if(current !== generation) return;
-      render(data);
-      setPollError(name, null);
-    } catch(e){
-      if(current === generation && e.name !== 'AbortError') setPollError(name, e.message);
-    } finally {
-      if(request === controller) request = null;
-      if(current !== generation){
-        if(pending && !document.hidden){ pending = false; schedule(0); }
-        return;
-      }
-      const delay = pending ? 0 : intervalMs;
-      pending = false;
-      schedule(delay);
-    }
-  }
-  return {
-    start(){ schedule(0); },
-    refresh(){
-      if(document.hidden) return;
-      if(request){ pending = true; generation++; request.abort(); }
-      else { if(timer !== null){ clearTimeout(timer); timer = null; } schedule(0); }
-    },
-    pause(){
-      pending = false;
-      generation++;
-      if(timer !== null){ clearTimeout(timer); timer = null; }
-      if(request) request.abort();
-    },
-    resume(){ if(request) pending = true; else schedule(0); },
-  };
-}
-
-const livePoll = pollStream('live', '/api/live', renderLive, LIVE_MS);
-const statePoll = pollStream('state', '/api/state', renderState, STATE_MS);
-const jobsPoll = pollStream('jobs', '/api/control/jobs', renderOverviewJobs, 1000);
-const POLLERS = [livePoll, statePoll, jobsPoll];
-document.addEventListener('visibilitychange', () => {
-  for(const poller of POLLERS) document.hidden ? poller.pause() : poller.resume();
-});
-for(const poller of POLLERS) poller.start();
+// Applied before first paint so a stored manual override never flashes the
+// other theme. The default is whatever the room is: no attribute at all.
+try{
+  var t = localStorage.getItem('ollama-dash-theme');
+  if(t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+}catch(e){}
 </script>
-</body></html>
+</head>
+<body>
+<a class="skip" href="#main">Skip to workbench</a>
+
+<div class="app">
+
+  <!-- The instrument. Everything here moves; nothing here changes position.
+       app.js builds this DOM once and then only writes text and bar widths. -->
+  <aside class="rail" aria-label="Live status">
+
+    <div class="rail-id">
+      <span class="rail-mark" aria-hidden="true">OL</span>
+      <span class="rail-id-text">Ollama Operations</span>
+    </div>
+
+    <div class="verdict">
+      <p class="verdict-line">
+        <span class="verdict-dot" id="verdict-dot" aria-hidden="true"></span>
+        <span class="verdict-word" id="verdict-word">Starting</span>
+      </p>
+      <p class="verdict-why" id="verdict-why">Waiting for the first sample.</p>
+    </div>
+
+    <div class="rail-sep"></div>
+
+    <div class="rail-resident">
+      <div class="meter-label">Resident</div>
+      <p class="resident-name" id="resident-name" style="margin-top:7px">&mdash;</p>
+      <p class="resident-meta" id="resident-meta"></p>
+      <p class="resident-extra" id="resident-extra"></p>
+    </div>
+
+    <div class="rail-sep"></div>
+
+    <div class="rail-meters">
+
+      <div class="r-compute">
+        <div class="meter-head">
+          <span class="meter-label">Compute</span>
+          <span class="meter-value" id="m-compute">&mdash;<span class="meter-unit">%</span></span>
+        </div>
+        <div class="gauge"><i id="g-compute"></i></div>
+        <p class="meter-detail" id="d-compute">sampling</p>
+      </div>
+
+      <div class="r-memory">
+        <div class="meter-head">
+          <span class="meter-label">Memory</span>
+          <span class="meter-value" id="m-memory">&mdash;<span class="meter-unit">%</span></span>
+        </div>
+        <div class="gauge"><i id="g-memory"></i></div>
+        <p class="meter-detail" id="d-memory">sampling</p>
+      </div>
+
+      <div class="r-io">
+        <div class="meter-head">
+          <span class="meter-label">I/O</span>
+          <span class="meter-value" id="m-io">&mdash;<span class="meter-unit">MB/s</span></span>
+        </div>
+        <div class="gauge"><i id="g-io"></i></div>
+        <p class="meter-detail" id="d-io">sampling</p>
+      </div>
+
+      <div class="r-req">
+        <div class="meter-head">
+          <span class="meter-label">Requests</span>
+          <span class="meter-value" id="m-req">&mdash;<span class="meter-unit">rps</span></span>
+        </div>
+        <div class="gauge"><i id="g-req"></i></div>
+        <p class="meter-detail" id="d-req">5 minute window</p>
+      </div>
+
+      <div class="meter-pair">
+        <div class="r-compute">
+          <div class="meter-head">
+            <span class="meter-label">Host CPU</span>
+          </div>
+          <p class="meter-value" id="m-cpu" style="margin-top:5px">&mdash;<span class="meter-unit">%</span></p>
+          <div class="gauge thin"><i id="g-cpu"></i></div>
+        </div>
+        <div class="r-memory">
+          <div class="meter-head">
+            <span class="meter-label">Host RAM</span>
+          </div>
+          <p class="meter-value" id="m-ram" style="margin-top:5px">&mdash;<span class="meter-unit">%</span></p>
+          <div class="gauge thin"><i id="g-ram"></i></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="rail-job" id="rail-job" hidden>
+      <div class="meter-label" style="margin-bottom:6px">Active job</div>
+      <p class="job-strip-name" id="rail-job-name">&mdash;</p>
+      <div class="gauge r-req" style="margin-top:7px"><i id="rail-job-bar"></i></div>
+      <p class="job-strip-line" id="rail-job-line"></p>
+    </div>
+
+    <div class="rail-foot">
+      <button class="btn ghost sm" id="btn-theme" aria-label="Switch colour theme">Theme</button>
+      <span class="rail-clock" id="clock">&mdash;&mdash;:&mdash;&mdash;:&mdash;&mdash;</span>
+    </div>
+
+  </aside>
+
+  <div class="work">
+
+    <div class="work-head">
+      <div class="tabs" role="tablist" aria-label="Sections">
+        <button class="tab" role="tab" id="tab-models"   aria-controls="v-models"   aria-selected="true">Models<span class="tab-count" id="count-models" hidden>0</span></button>
+        <button class="tab" role="tab" id="tab-activity" aria-controls="v-activity" aria-selected="false" tabindex="-1">Activity<span class="tab-count" id="count-activity" hidden>0</span></button>
+        <button class="tab" role="tab" id="tab-host"     aria-controls="v-host"     aria-selected="false" tabindex="-1">Host</button>
+        <button class="tab" role="tab" id="tab-bench"    aria-controls="v-bench"    aria-selected="false" tabindex="-1">Bench</button>
+      </div>
+      <div class="work-tools">
+        <button class="btn ghost sm" id="btn-palette">Command <span class="kbd" id="kbd-hint">&#8984;K</span></button>
+      </div>
+    </div>
+
+    <main class="work-body" id="main" tabindex="-1">
+
+      <div class="alerts" id="alerts" role="alert"></div>
+      <div class="alerts" id="toast" role="status" aria-live="polite"></div>
+
+      <noscript>
+        <div class="alert bad"><span class="alert-mark">!</span>
+        <p>This dashboard needs JavaScript. Every number on the page is polled from the local server.</p></div>
+      </noscript>
+
+      <!-- ============================================================ MODELS -->
+      <section class="view" id="v-models" role="tabpanel" aria-labelledby="tab-models">
+
+        <div class="panel lead">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Resident models</h2>
+              <span class="panel-note" id="resident-note">Held in memory and ready to serve</span>
+            </div>
+            <div class="panel-tools">
+              <button class="btn danger sm" id="btn-unload-all" data-needs-ollama>Unload all</button>
+            </div>
+          </div>
+          <div class="tablewrap" id="resident"><div class="skel"><i></i><i></i></div></div>
+        </div>
+
+        <div class="cols cols-bias-r">
+
+          <div class="panel boxed">
+            <div class="panel-head"><div class="panel-title"><h2>Load a model</h2></div></div>
+            <div class="form-block">
+              <div class="field">
+                <label class="field-label" for="load-model">Model</label>
+                <select id="load-model" data-needs-ollama></select>
+              </div>
+              <div class="fieldgrid">
+                <div class="field">
+                  <label class="field-label" for="load-ctx">num_ctx</label>
+                  <input id="load-ctx" type="number" min="1" placeholder="server default" data-needs-ollama>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="load-gpu">num_gpu</label>
+                  <input id="load-gpu" type="number" min="0" placeholder="all layers" data-needs-ollama>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="load-ttl">keep_alive</label>
+                  <input id="load-ttl" placeholder="e.g. 30m" data-needs-ollama>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" id="btn-load" data-needs-ollama>Load</button>
+                <button class="btn" id="btn-fit" data-needs-ollama>Check fit</button>
+              </div>
+              <div id="fit-out" role="status" aria-live="polite"></div>
+              <p class="hint" id="server-opts"></p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Jobs</h2>
+                <span class="panel-note" id="jobs-note">No history</span>
+              </div>
+              <div class="panel-tools">
+                <button class="btn sm" id="btn-clear-jobs" disabled>Clear finished</button>
+              </div>
+            </div>
+            <div id="jobs"><div class="skel"><i></i><i></i></div></div>
+          </div>
+
+        </div>
+
+        <div class="panel boxed">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Acquire a model</h2>
+              <span class="panel-note">Pull from the Ollama library</span>
+            </div>
+            <div class="panel-tools">
+              <span class="panel-note">Catalog <span id="cat-age">not loaded</span></span>
+              <button class="btn sm" id="btn-cat-refresh">Refresh</button>
+            </div>
+          </div>
+          <div class="form-block">
+            <div class="inline">
+              <div class="field grow">
+                <label class="field-label" for="dl-name">Model identifier</label>
+                <input id="dl-name" placeholder="llama3.1:8b" data-needs-ollama>
+              </div>
+              <button class="btn primary" id="btn-download" data-needs-ollama disabled>Download</button>
+            </div>
+            <div class="field">
+              <label class="field-label vh" for="cat-search">Filter the catalog</label>
+              <input id="cat-search" placeholder="Filter by name, capability, or size">
+            </div>
+            <p class="hint bad" id="cat-status" hidden></p>
+            <div class="catalog" id="catalog"><div class="skel"><i></i><i></i><i></i></div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Local inventory</h2>
+              <span class="panel-note" id="inventory-note">&mdash;</span>
+            </div>
+          </div>
+          <div class="tablewrap cap-lg" id="inventory"><div class="skel"><i></i><i></i><i></i></div></div>
+        </div>
+
+      </section>
+
+      <!-- ========================================================== ACTIVITY -->
+      <section class="view" id="v-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+
+        <div class="panel lead">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Request summary</h2>
+              <span class="panel-note">Rolling 5 minutes, from the systemd journal</span>
+            </div>
+          </div>
+          <div class="figures" id="figures"><div class="skel"><i></i><i></i></div></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Recent requests</h2>
+              <span class="panel-note" id="req-freshness">Waiting for the journal</span>
+            </div>
+          </div>
+          <div class="tablewrap cap-lg" id="requests"><div class="skel"><i></i><i></i><i></i></div></div>
+        </div>
+
+        <div class="cols cols-2">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>Clients</h2>
+              <span class="panel-note">Callers seen in the window</span></div></div>
+            <div class="tablewrap" id="clients"><div class="skel"><i></i><i></i></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>Endpoints</h2>
+              <span class="panel-note">Busiest paths</span></div></div>
+            <div class="tablewrap" id="endpoints"><div class="skel"><i></i><i></i></div></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title"><h2>Journal problems</h2>
+            <span class="panel-note">Warnings and errors from ollama.service</span></div></div>
+          <div class="tablewrap cap-md" id="problems"><div class="skel"><i></i><i></i></div></div>
+        </div>
+
+      </section>
+
+      <!-- ============================================================== HOST -->
+      <section class="view" id="v-host" role="tabpanel" aria-labelledby="tab-host" hidden>
+
+        <div class="panel lead">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>GPU</h2>
+              <span class="panel-note" id="gpu-note">&mdash;</span>
+            </div>
+          </div>
+          <div class="cols cols-bias stretch">
+            <div class="chart-col">
+              <svg class="spark" id="gpu-spark" viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>
+              <div class="spark-legend" id="gpu-spark-legend"></div>
+            </div>
+            <div class="kv" id="gpu-kv"><div class="skel"><i></i><i></i><i></i></div></div>
+          </div>
+        </div>
+
+        <div class="cols cols-2">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>PCIe link</h2>
+              <span class="panel-note" id="pcie-note">Host to GPU transfer</span></div></div>
+            <svg class="spark" id="pcie-spark" viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>
+            <div class="spark-legend" id="pcie-spark-legend"></div>
+            <div class="kv" id="pcie-kv" style="margin-top:var(--space-3)"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>GPU processes</h2>
+              <span class="panel-note" id="procs-note">&mdash;</span></div></div>
+            <div class="tablewrap cap-md" id="procs"></div>
+          </div>
+        </div>
+
+        <div class="cols cols-3">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>Host</h2></div></div>
+            <div class="kv" id="host-kv"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>Service and storage</h2></div></div>
+            <div class="kv" id="service-kv"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title"><h2>Tailscale</h2></div></div>
+            <div class="kv" id="ts-kv"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title">
+              <h2>Service environment</h2>
+              <span class="panel-note">Read only. Secret-shaped names are redacted before they leave the server.</span>
+            </div>
+            <div class="panel-tools"><span class="panel-note" id="env-unit"></span></div>
+          </div>
+          <div class="tablewrap cap-lg" id="env"></div>
+        </div>
+
+      </section>
+
+      <!-- ============================================================= BENCH -->
+      <section class="view" id="v-bench" role="tabpanel" aria-labelledby="tab-bench" hidden>
+
+        <div class="cols cols-bias-r">
+
+          <div class="panel boxed">
+            <div class="panel-head"><div class="panel-title"><h2>Benchmark setup</h2></div></div>
+            <div class="form-block">
+              <div class="field">
+                <span class="field-label" id="bench-models-label">Completion models</span>
+                <div class="checklist" id="bench-models" role="group"
+                     aria-labelledby="bench-models-label" aria-describedby="bench-help"></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn sm" id="bench-all" data-needs-ollama>Select all</button>
+                <button class="btn sm" id="bench-none">Clear</button>
+              </div>
+              <div class="field">
+                <label class="field-label" for="bench-prompt">Prompt</label>
+                <textarea id="bench-prompt" data-needs-ollama>Explain why both latency and throughput matter when evaluating a local language model. Be concrete and concise.</textarea>
+              </div>
+              <div class="fieldgrid">
+                <div class="field"><label class="field-label" for="bench-warmups">Warm-ups</label>
+                  <input id="bench-warmups" type="number" min="0" max="5" value="1" data-needs-ollama></div>
+                <div class="field"><label class="field-label" for="bench-runs">Measured runs</label>
+                  <input id="bench-runs" type="number" min="1" max="10" value="3" data-needs-ollama></div>
+                <div class="field"><label class="field-label" for="bench-tokens">Output tokens</label>
+                  <input id="bench-tokens" type="number" min="1" max="2048" value="128" data-needs-ollama></div>
+                <div class="field"><label class="field-label" for="bench-context">num_ctx</label>
+                  <input id="bench-context" type="number" min="1" placeholder="server default" data-needs-ollama></div>
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" id="bench-start" data-needs-ollama>Run benchmark</button>
+                <span class="hint" id="bench-message" role="status"></span>
+              </div>
+              <p class="hint" id="bench-help">Runs are sequential. Avoid other Ollama traffic while testing. Resident models can affect placement, and embedding models use a different workload, so they are excluded.</p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div class="panel-title">
+                <h2>Results</h2>
+                <span class="panel-note">Medians, with per-run evidence</span>
+              </div>
+            </div>
+            <div id="bench-results"></div>
+          </div>
+
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<dialog id="palette" aria-label="Command palette">
+  <input class="pal-input" id="pal-input" type="text" autocomplete="off" spellcheck="false"
+         placeholder="Jump to a section, or run an action" aria-controls="pal-list"
+         aria-expanded="true" role="combobox" aria-autocomplete="list">
+  <div class="pal-list" id="pal-list" role="listbox" aria-label="Commands"></div>
+  <div class="pal-foot">
+    <span><span class="kbd">&uarr;&darr;</span> move</span>
+    <span><span class="kbd">&crarr;</span> run</span>
+    <span><span class="kbd">esc</span> close</span>
+  </div>
+</dialog>
+
+<dialog id="confirm-delete" aria-labelledby="del-title">
+  <div class="dlg-head"><h2 id="del-title">Delete model</h2></div>
+  <div class="dlg-body">
+    <p id="del-copy"></p>
+    <div class="field">
+      <label class="field-label" for="del-input">Type the model name to confirm</label>
+      <input id="del-input" autocomplete="off" spellcheck="false">
+    </div>
+    <p class="hint bad" id="del-status" role="status"></p>
+  </div>
+  <div class="dlg-foot">
+    <button class="btn" id="del-cancel">Cancel</button>
+    <button class="btn danger" id="del-confirm" disabled>Delete model</button>
+  </div>
+</dialog>
+
+<script src="/assets/app.js"></script>
+</body>
+</html>

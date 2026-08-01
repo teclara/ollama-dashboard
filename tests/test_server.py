@@ -30,13 +30,26 @@ class TestRoutes(unittest.TestCase):
         code, body = self._req("/")
         self.assertEqual(code, 200)
         self.assertIn(b"<html", body.lower())
+        # One surface: the live rail plus four tabpanels, no page navigation.
+        self.assertIn(b'class="rail"', body)
+        for view in (b"models", b"activity", b"host", b"bench"):
+            self.assertIn(b'id="v-%s"' % view, body)
+            self.assertIn(b'id="tab-%s"' % view, body)
+        self.assertIn(b"/assets/app.js", body)
 
-    def test_control_panel_served(self):
-        self.assertEqual(self._req("/control")[0], 200)
+    def test_control_route_redirects_to_the_single_page(self):
+        # /control is no longer a page. It stays routed so that bookmarks from
+        # the two-page layout keep working.
+        code, body = self._req("/control")
+        self.assertEqual(code, 200)
+        self.assertIn(b"location.replace", body)
 
     def test_shared_app_assets_are_served(self):
         self.assertEqual(self._req("/assets/app.css")[0], 200)
         self.assertEqual(self._req("/assets/app.js")[0], 200)
+        code, body = self._req("/assets/favicon.svg")
+        self.assertEqual(code, 200)
+        self.assertIn(b"<svg", body)
 
     def test_unknown_path_404s(self):
         self.assertEqual(self._req("/nope")[0], 404)

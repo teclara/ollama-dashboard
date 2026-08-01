@@ -21,6 +21,7 @@ INDEX_HTML = _read_template("index.html")
 CONTROL_HTML = _read_template("control.html")
 APP_CSS = _read_template("app.css")
 APP_JS = _read_template("app.js")
+FAVICON_SVG = _read_template("favicon.svg")
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -74,6 +75,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, "text/css; charset=utf-8", APP_CSS)
         if self.path == "/assets/app.js":
             return self._send(200, "text/javascript; charset=utf-8", APP_JS)
+        if self.path == "/assets/favicon.svg":
+            return self._send(200, "image/svg+xml", FAVICON_SVG)
         if self.path == "/api/state":
             return self._json(200, sources.state())
         # Small fast-moving slice, safe to poll many times a second.
