@@ -620,6 +620,10 @@ textarea{min-height:88px;resize:vertical;line-height:1.55}
 select{cursor:pointer}
 
 .fieldgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(124px,1fr));gap:var(--space-3)}
+/* Four fields in a ~440px column cannot make four tracks, so auto-fit drops to
+   three and strands the fourth alone on a second row. Pair them deliberately
+   into 2x2 instead of letting the grid decide badly. */
+.fieldgrid.pairs{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 .inline{display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap}
 .inline .grow{flex:1 1 220px;min-width:0}
 .form-block{display:grid;gap:var(--space-3)}
