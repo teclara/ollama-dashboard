@@ -159,6 +159,7 @@ let JOBS = {};         // last /api/control/jobs payload
 let CATALOG = [], CATALOG_ERROR = null;
 let ollamaAvailable = true;
 let benchInitialised = false;
+let benchRenderSignature;
 let peakRps = 1;       // scale for the rail's requests gauge, stated in its detail line
 const POLL_ERRORS = {live:null, state:null, jobs:null};
 const BENCH_KEY = 'benchmark:suite';
@@ -1056,9 +1057,18 @@ function renderBench(p){
   const running = !!(p && !p.done);
   $('bench-start').disabled = running || !ollamaAvailable;
   setText($('bench-start'), running ? 'Benchmark running' : 'Run benchmark');
+  // Completed jobs remain in /api/control/jobs and are polled every second.
+  // Do not replace an unchanged results tree: doing so resets native <details>
+  // state and focus immediately after an operator opens per-run evidence.
+  const signature = JSON.stringify(p || null);
+  if(signature === benchRenderSignature) return;
+  const expandedModels = new Set(Array.from(
+    host.querySelectorAll('details[data-bench-model][open]'),
+    details => details.getAttribute('data-bench-model')));
   if(!p){
     put(host, empty('No benchmark yet',
       'Pick one or more completion models and run the suite. Each model is warmed up, then timed over several runs, and the median is reported with every individual run kept as evidence.'));
+    benchRenderSignature = signature;
     return;
   }
   const state = p.error ? 'failed' : p.done ? 'finished' : p.status;
@@ -1094,8 +1104,9 @@ function renderBench(p){
         ]))),
     ]));
     for(const r of results){
-      const det = ce('details', {}, [ce('summary', {
+      const det = ce('details', {attrs:{'data-bench-model':r.model}}, [ce('summary', {
         text: r.status === 'failed' ? r.model + ': ' + r.error : r.model + ': per-run evidence'})]);
+      det.open = expandedModels.has(r.model);
       if((r.runs || []).length){
         det.appendChild(ce('div', {cls:'tablewrap'}, [
           tbl(null, ['run','output tok/s','prompt tok/s','TTFT','load','wall','tokens'],
@@ -1114,6 +1125,7 @@ function renderBench(p){
     }
   }
   put(host, kids);
+  benchRenderSignature = signature;
 }
 
 /* ======================================================== catalog ========= */
